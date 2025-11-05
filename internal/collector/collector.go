@@ -13,6 +13,7 @@ import (
 	"consensus-monitoring/internal/moniker"
 	"strconv"
 	"strings"
+	"sync"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	rpccoretypes "github.com/cometbft/cometbft/rpc/core/types"
@@ -21,10 +22,12 @@ import (
 )
 
 type Collector struct {
-	cfg    config.Config
-	db     *gorm.DB
-	client *rpchttp.HTTP
-	monres *moniker.Resolver
+	cfg             config.Config
+	db              *gorm.DB
+	client          *rpchttp.HTTP
+	monres          *moniker.Resolver
+	lastBlockTime   time.Time
+	lastBlockTimeMu sync.RWMutex
 }
 
 func NewCollector(cfg config.Config, db *gorm.DB) (*Collector, error) {
@@ -37,7 +40,40 @@ func NewCollector(cfg config.Config, db *gorm.DB) (*Collector, error) {
 }
 
 func (c *Collector) Run(ctx context.Context) error {
+	for {
+		if err := c.runLoop(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil // Context cancelled, normal shutdown
+			}
+			// Only log actual errors, not planned reconnects
+			if !strings.Contains(err.Error(), "reconnect:") {
+				log.Printf("Run loop error: %v, reconnecting...", err)
+			}
+			time.Sleep(3 * time.Second) // Brief pause before reconnecting
+		}
+	}
+}
+
+func (c *Collector) runLoop(ctx context.Context) error {
+	// Stop and cleanup existing client if present (reconnect case)
+	if c.client != nil {
+		unsubCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_ = c.client.UnsubscribeAll(unsubCtx, "consmon")
+		cancel()
+		c.client.Stop()
+		c.client = nil
+		time.Sleep(500 * time.Millisecond) // Brief pause for cleanup
+	}
+
+	// Create and start new client
+	newClient, err := rpchttp.New(c.cfg.RPCURL, c.cfg.WSURL())
+	if err != nil {
+		return fmt.Errorf("create rpc client: %w", err)
+	}
+	c.client = newClient
+
 	if err := c.client.Start(); err != nil {
+		c.client = nil
 		return fmt.Errorf("start rpc client: %w", err)
 	}
 
@@ -64,10 +100,36 @@ func (c *Collector) Run(ctx context.Context) error {
 
 	log.Printf("Subscribed to events: NewRound, CompleteProposal?, Propose?, NewBlock")
 
+	// Initialize last block time
+	c.lastBlockTimeMu.Lock()
+	c.lastBlockTime = time.Now()
+	c.lastBlockTimeMu.Unlock()
+
+	// Watchdog: check for missing blocks every 12 seconds
+	watchdog := time.NewTicker(12 * time.Second)
+	defer watchdog.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-watchdog.C:
+			// Check if we haven't received blocks for 12 seconds
+			c.lastBlockTimeMu.RLock()
+			timeSinceLastBlock := time.Since(c.lastBlockTime)
+			c.lastBlockTimeMu.RUnlock()
+
+			if timeSinceLastBlock > 12*time.Second {
+				log.Printf("No blocks received for %.0f seconds, reconnecting WebSocket...", timeSinceLastBlock.Seconds())
+				// Invalidate client - will be cleaned up in next runLoop
+				c.client = nil
+				// Reset last block time
+				c.lastBlockTimeMu.Lock()
+				c.lastBlockTime = time.Now()
+				c.lastBlockTimeMu.Unlock()
+				// Return to trigger reconnection
+				return fmt.Errorf("reconnect: no blocks for 12s")
+			}
 		case ev := <-roundCh:
 			if ev.Data == nil {
 				continue
@@ -85,6 +147,10 @@ func (c *Collector) Run(ctx context.Context) error {
 			if ev.Data == nil {
 				continue
 			}
+			// Update last block time
+			c.lastBlockTimeMu.Lock()
+			c.lastBlockTime = time.Now()
+			c.lastBlockTimeMu.Unlock()
 			c.handleNewBlock(ev)
 		}
 	}

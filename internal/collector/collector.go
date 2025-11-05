@@ -105,8 +105,8 @@ func (c *Collector) runLoop(ctx context.Context) error {
 	c.lastBlockTime = time.Now()
 	c.lastBlockTimeMu.Unlock()
 
-	// Watchdog: check for missing blocks every 12 seconds
-	watchdog := time.NewTicker(12 * time.Second)
+	// Watchdog: check for missing blocks every 30 seconds
+	watchdog := time.NewTicker(30 * time.Second)
 	defer watchdog.Stop()
 
 	for {
@@ -114,12 +114,12 @@ func (c *Collector) runLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-watchdog.C:
-			// Check if we haven't received blocks for 12 seconds
+			// Check if we haven't received blocks for 30 seconds
 			c.lastBlockTimeMu.RLock()
 			timeSinceLastBlock := time.Since(c.lastBlockTime)
 			c.lastBlockTimeMu.RUnlock()
 
-			if timeSinceLastBlock > 12*time.Second {
+			if timeSinceLastBlock > 30*time.Second {
 				log.Printf("No blocks received for %.0f seconds, reconnecting WebSocket...", timeSinceLastBlock.Seconds())
 				// Invalidate client - will be cleaned up in next runLoop
 				c.client = nil
@@ -128,7 +128,7 @@ func (c *Collector) runLoop(ctx context.Context) error {
 				c.lastBlockTime = time.Now()
 				c.lastBlockTimeMu.Unlock()
 				// Return to trigger reconnection
-				return fmt.Errorf("reconnect: no blocks for 12s")
+				return fmt.Errorf("reconnect: no blocks for 30s")
 			}
 		case ev := <-roundCh:
 			if ev.Data == nil {

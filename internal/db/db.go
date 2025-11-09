@@ -37,5 +37,6 @@ func AutoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&models.Block{},
 		&models.RoundProposer{},
+		&models.RoundVote{},
 	)
 }

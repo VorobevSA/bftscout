@@ -28,6 +28,9 @@ type Collector struct {
 	monres          *moniker.Resolver
 	lastBlockTime   time.Time
 	lastBlockTimeMu sync.RWMutex
+	// Vote accumulation: map[height][]*models.RoundVote
+	pendingVotes map[int64][]*models.RoundVote
+	votesMu      sync.Mutex // Protects pendingVotes
 }
 
 func NewCollector(cfg config.Config, db *gorm.DB) (*Collector, error) {
@@ -36,7 +39,13 @@ func NewCollector(cfg config.Config, db *gorm.DB) (*Collector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Collector{cfg: cfg, db: db, client: c, monres: moniker.NewResolver(cfg.RPCURL, cfg.AppAPIURL)}, nil
+	return &Collector{
+		cfg:          cfg,
+		db:           db,
+		client:       c,
+		monres:       moniker.NewResolver(cfg.RPCURL, cfg.AppAPIURL),
+		pendingVotes: make(map[int64][]*models.RoundVote),
+	}, nil
 }
 
 func (c *Collector) Run(ctx context.Context) error {
@@ -55,57 +64,192 @@ func (c *Collector) Run(ctx context.Context) error {
 }
 
 func (c *Collector) runLoop(ctx context.Context) error {
-	// Stop and cleanup existing client if present (reconnect case)
-	if c.client != nil {
-		unsubCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_ = c.client.UnsubscribeAll(unsubCtx, "consmon")
-		cancel()
-		c.client.Stop()
-		c.client = nil
-		time.Sleep(500 * time.Millisecond) // Brief pause for cleanup
+	// Create a cancellable context for this connection cycle
+	// This ensures that when we reconnect, all old goroutines are properly stopped
+	loopCtx, cancel := context.WithCancel(ctx)
+	defer cancel() // Ensure cleanup on exit
+
+	// Cleanup existing client if present (reconnect case)
+	if err := c.cleanupClient(loopCtx); err != nil {
+		log.Printf("warning: error during client cleanup: %v", err)
 	}
 
 	// Create and start new client
-	newClient, err := rpchttp.New(c.cfg.RPCURL, c.cfg.WSURL())
+	if err := c.initClient(); err != nil {
+		return err
+	}
+
+	// Subscribe to all events
+	subscriptions, err := c.subscribeToEvents(loopCtx)
+	if err != nil {
+		return err
+	}
+
+	// Initialize last block time
+	c.updateLastBlockTime()
+
+	// Start event handlers in separate goroutines
+	// These will be stopped when loopCtx is cancelled on reconnect
+	c.startEventHandlers(loopCtx, subscriptions)
+
+	// Main loop: only handles context cancellation and watchdog
+	return c.watchdogLoop(loopCtx)
+}
+
+// cleanupClient stops and cleans up existing client
+func (c *Collector) cleanupClient(ctx context.Context) error {
+	if c.client == nil {
+		return nil
+	}
+
+	unsubCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	_ = c.client.UnsubscribeAll(unsubCtx, "consmon")
+	c.client.Stop()
+	c.client = nil
+
+	time.Sleep(500 * time.Millisecond) // Brief pause for cleanup
+	return nil
+}
+
+// initClient creates and starts a new RPC client
+func (c *Collector) initClient() error {
+	client, err := rpchttp.New(c.cfg.RPCURL, c.cfg.WSURL())
 	if err != nil {
 		return fmt.Errorf("create rpc client: %w", err)
 	}
-	c.client = newClient
 
-	if err := c.client.Start(); err != nil {
-		c.client = nil
+	if err := client.Start(); err != nil {
 		return fmt.Errorf("start rpc client: %w", err)
 	}
 
-	// Subscribe to NewRound, CompleteProposal/Propose (attributes-based), and NewBlock events
+	c.client = client
+	return nil
+}
+
+// eventSubscriptions holds all event channel subscriptions
+type eventSubscriptions struct {
+	roundCh    <-chan rpccoretypes.ResultEvent
+	completeCh <-chan rpccoretypes.ResultEvent
+	proposeCh  <-chan rpccoretypes.ResultEvent
+	blockCh    <-chan rpccoretypes.ResultEvent
+	voteCh     <-chan rpccoretypes.ResultEvent
+}
+
+// subscribeToEvents subscribes to all CometBFT events
+func (c *Collector) subscribeToEvents(ctx context.Context) (*eventSubscriptions, error) {
+	subs := &eventSubscriptions{}
+
+	// Required subscriptions
 	roundCh, err := c.client.Subscribe(ctx, "consmon", "tm.event = 'NewRound'")
 	if err != nil {
-		return fmt.Errorf("subscribe NewRound: %w", err)
+		return nil, fmt.Errorf("subscribe NewRound: %w", err)
 	}
-
-	// These events often carry proposer/height/round in attributes depending on version/build
-	completeCh, err := c.client.Subscribe(ctx, "consmon", "tm.event = 'CompleteProposal'")
-	if err != nil {
-		log.Printf("warn: subscribe CompleteProposal failed: %v", err)
-	}
-	proposeCh, err := c.client.Subscribe(ctx, "consmon", "tm.event = 'Propose'")
-	if err != nil {
-		log.Printf("warn: subscribe Propose failed: %v", err)
-	}
+	subs.roundCh = roundCh
 
 	blockCh, err := c.client.Subscribe(ctx, "consmon", "tm.event = 'NewBlock'")
 	if err != nil {
-		return fmt.Errorf("subscribe NewBlock: %w", err)
+		return nil, fmt.Errorf("subscribe NewBlock: %w", err)
+	}
+	subs.blockCh = blockCh
+
+	voteCh, err := c.client.Subscribe(ctx, "consmon", "tm.event = 'Vote'")
+	if err != nil {
+		return nil, fmt.Errorf("subscribe Vote: %w", err)
+	}
+	subs.voteCh = voteCh
+
+	// Optional subscriptions (may fail in some CometBFT versions)
+	if completeCh, err := c.client.Subscribe(ctx, "consmon", "tm.event = 'CompleteProposal'"); err == nil {
+		subs.completeCh = completeCh
+	} else {
+		log.Printf("warn: subscribe CompleteProposal failed: %v", err)
 	}
 
-	log.Printf("Subscribed to events: NewRound, CompleteProposal?, Propose?, NewBlock")
+	if proposeCh, err := c.client.Subscribe(ctx, "consmon", "tm.event = 'Propose'"); err == nil {
+		subs.proposeCh = proposeCh
+	} else {
+		log.Printf("warn: subscribe Propose failed: %v", err)
+	}
 
-	// Initialize last block time
+	log.Printf("Subscribed to events: NewRound, NewBlock, Vote, CompleteProposal?, Propose?")
+	return subs, nil
+}
+
+// startEventHandlers starts goroutines for each event type
+func (c *Collector) startEventHandlers(ctx context.Context, subs *eventSubscriptions) {
+	// NewRound events
+	c.startEventHandler(ctx, "NewRound", subs.roundCh, func(ev rpccoretypes.ResultEvent) {
+		if ev.Data != nil {
+			c.handleNewRound(ev)
+		}
+	})
+
+	// CompleteProposal events
+	if subs.completeCh != nil {
+		c.startEventHandler(ctx, "CompleteProposal", subs.completeCh, func(ev rpccoretypes.ResultEvent) {
+			if ev.Data != nil {
+				c.handleProposerFromAttributes(ev)
+			}
+		})
+	}
+
+	// Propose events
+	if subs.proposeCh != nil {
+		c.startEventHandler(ctx, "Propose", subs.proposeCh, func(ev rpccoretypes.ResultEvent) {
+			if ev.Data != nil {
+				c.handleProposerFromAttributes(ev)
+			}
+		})
+	}
+
+	// NewBlock events
+	c.startEventHandler(ctx, "NewBlock", subs.blockCh, func(ev rpccoretypes.ResultEvent) {
+		if ev.Data == nil {
+			return
+		}
+		c.updateLastBlockTime()
+		c.handleNewBlock(ev)
+	})
+
+	// Vote events
+	c.startEventHandler(ctx, "Vote", subs.voteCh, func(ev rpccoretypes.ResultEvent) {
+		if ev.Data != nil {
+			c.handleVote(ev)
+		} else {
+			log.Printf("Vote event received with nil Data")
+		}
+	})
+}
+
+// startEventHandler starts a goroutine to handle events from a channel
+func (c *Collector) startEventHandler(ctx context.Context, name string, ch <-chan rpccoretypes.ResultEvent, handler func(rpccoretypes.ResultEvent)) {
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-ch:
+				if !ok {
+					log.Printf("%s event channel closed", name)
+					return
+				}
+				handler(ev)
+			}
+		}
+	}()
+}
+
+// updateLastBlockTime updates the last block time (thread-safe)
+func (c *Collector) updateLastBlockTime() {
 	c.lastBlockTimeMu.Lock()
 	c.lastBlockTime = time.Now()
 	c.lastBlockTimeMu.Unlock()
+}
 
-	// Watchdog: check for missing blocks every 30 seconds
+// watchdogLoop runs the main loop checking for missing blocks
+func (c *Collector) watchdogLoop(ctx context.Context) error {
 	watchdog := time.NewTicker(30 * time.Second)
 	defer watchdog.Stop()
 
@@ -114,47 +258,24 @@ func (c *Collector) runLoop(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-watchdog.C:
-			// Check if we haven't received blocks for 30 seconds
-			c.lastBlockTimeMu.RLock()
-			timeSinceLastBlock := time.Since(c.lastBlockTime)
-			c.lastBlockTimeMu.RUnlock()
-
-			if timeSinceLastBlock > 30*time.Second {
-				log.Printf("No blocks received for %.0f seconds, reconnecting WebSocket...", timeSinceLastBlock.Seconds())
-				// Invalidate client - will be cleaned up in next runLoop
+			if c.shouldReconnect() {
+				log.Printf("No blocks received for 30+ seconds, reconnecting WebSocket...")
 				c.client = nil
-				// Reset last block time
-				c.lastBlockTimeMu.Lock()
-				c.lastBlockTime = time.Now()
-				c.lastBlockTimeMu.Unlock()
-				// Return to trigger reconnection
+				c.updateLastBlockTime()
 				return fmt.Errorf("reconnect: no blocks for 30s")
 			}
-		case ev := <-roundCh:
-			if ev.Data == nil {
-				continue
-			}
-			c.handleNewRound(ev)
-		case ev := <-completeCh:
-			if ev.Data != nil {
-				c.handleProposerFromAttributes(ev)
-			}
-		case ev := <-proposeCh:
-			if ev.Data != nil {
-				c.handleProposerFromAttributes(ev)
-			}
-		case ev := <-blockCh:
-			if ev.Data == nil {
-				continue
-			}
-			// Update last block time
-			c.lastBlockTimeMu.Lock()
-			c.lastBlockTime = time.Now()
-			c.lastBlockTimeMu.Unlock()
-			c.handleNewBlock(ev)
 		}
 	}
 }
+
+// shouldReconnect checks if we should reconnect due to missing blocks
+func (c *Collector) shouldReconnect() bool {
+	c.lastBlockTimeMu.RLock()
+	defer c.lastBlockTimeMu.RUnlock()
+	return time.Since(c.lastBlockTime) > 30*time.Second
+}
+
+/*{"jsonrpc":"2.0","method":"subscribe","id":1,"params":{"query":"tm.event='Vote'"}}*/
 
 func (c *Collector) Close() error {
 	if c.client != nil {
@@ -180,12 +301,13 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 
 	height := data.Height
 	round := data.Round
+
 	// 1) Try from event payload (stable across versions): value.proposer.address
 	proposer := ""
 	// CometBFT types typically expose Proposer with Address bytes
 	// Guarded access to avoid panics on zero-values
 	// NOTE: in some versions Proposer could be nil, so check and format accordingly
-	if data.Proposer.Address != nil && len(data.Proposer.Address) > 0 {
+	if len(data.Proposer.Address) > 0 {
 		proposer = fmt.Sprintf("%X", data.Proposer.Address)
 	}
 	// 2) Try from event attributes (tags)
@@ -261,6 +383,12 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 		log.Printf("Block processed: height=%d hash=%s proposer=%s", b.Height, b.Hash[:16], proposerAddr[:16])
 	}
 
+	// Flush votes for previous height (height - 1) as a batch
+	prevHeight := b.Height - 1
+	if prevHeight > 0 {
+		c.flushVotesForHeight(prevHeight)
+	}
+
 	// Mark succeeded round for this height.
 	// We may not know exact round from event; heuristic: mark max(round) for height.
 	var r models.RoundProposer
@@ -273,7 +401,9 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 			}
 			_ = c.db.Save(&r).Error
 		}
-	} else {
+	}
+
+	if tx.Error != nil {
 		// No round observed; create a synthetic round 0 as succeeded
 		_ = c.db.Create(&models.RoundProposer{
 			Height:          b.Height,
@@ -420,17 +550,88 @@ func (c *Collector) resolveMoniker(consAddrHex string) string {
 	return c.monres.Resolve(consAddrHex)
 }
 
-// Optionally: helper to resync latest block height polling if needed.
-func (c *Collector) pingLoop(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Touch RPC to keep connection healthy
-			_, _ = c.client.Status(ctx)
+// handleVote processes Vote events from WebSocket (includes both Prevote and Precommit)
+// This function is called from a separate goroutine, so it needs to be thread-safe
+// Votes are accumulated in memory and will be written to DB in batches when a new block arrives
+func (c *Collector) handleVote(ev rpccoretypes.ResultEvent) {
+	data, ok := ev.Data.(cmttypes.EventDataVote)
+	if !ok {
+		log.Printf("unknown Vote event data type: %T, data: %+v", ev.Data, ev.Data)
+		return
+	}
+	if data.Vote == nil {
+		log.Printf("Vote event has nil Vote field: %+v", data)
+		return
+	}
+	vote := data.Vote
+
+	// Determine vote type (1 = Prevote, 2 = Precommit)
+	voteType := "prevote"
+	if vote.Type == 2 { // VoteTypePrecommit
+		voteType = "precommit"
+	}
+
+	// Extract block hash if present
+	blockHash := ""
+	if len(vote.BlockID.Hash) > 0 {
+		blockHash = fmt.Sprintf("%X", vote.BlockID.Hash)
+	}
+
+	// Create RoundVote record (proposer will be filled later from RoundProposer)
+	roundVote := &models.RoundVote{
+		Height:           vote.Height,
+		Round:            vote.Round,
+		ValidatorAddress: fmt.Sprintf("%X", vote.ValidatorAddress),
+		ValidatorMoniker: c.resolveMoniker(fmt.Sprintf("%X", vote.ValidatorAddress)),
+		ProposerAddress:  "", // Will be filled from RoundProposer when flushing
+		VoteType:         voteType,
+		BlockHash:        blockHash,
+		Timestamp:        vote.Timestamp,
+	}
+
+	// Accumulate vote by height
+	c.votesMu.Lock()
+	c.pendingVotes[vote.Height] = append(c.pendingVotes[vote.Height], roundVote)
+	c.votesMu.Unlock()
+}
+
+// flushVotesForHeight writes accumulated votes for a given height to the database in a batch
+func (c *Collector) flushVotesForHeight(height int64) {
+	// Extract and remove votes for this height
+	c.votesMu.Lock()
+	votes, exists := c.pendingVotes[height]
+	if !exists || len(votes) == 0 {
+		c.votesMu.Unlock()
+		return
+	}
+	// Remove from map to free memory
+	delete(c.pendingVotes, height)
+	c.votesMu.Unlock()
+
+	// Fetch proposers for all rounds of this height
+	roundProposers := make(map[int32]string) // round -> proposer address
+	var proposers []models.RoundProposer
+	if err := c.db.Where("height = ?", height).Find(&proposers).Error; err == nil {
+		for _, rp := range proposers {
+			if rp.ProposerAddress != "" {
+				roundProposers[rp.Round] = rp.ProposerAddress
+			}
 		}
+	}
+
+	// Fill proposer address for each vote
+	for _, vote := range votes {
+		if proposer, ok := roundProposers[vote.Round]; ok {
+			vote.ProposerAddress = proposer
+		}
+	}
+
+	// Batch insert votes (GORM CreateInBatches with batch size 1000)
+	// This ensures all votes for a single block are written in one batch
+	// Typical block has ~70-140 votes (70 validators * 2 vote types * rounds)
+	if err := c.db.CreateInBatches(votes, 1000).Error; err != nil {
+		log.Printf("error flushing votes for height %d: %v (votes count: %d)", height, err, len(votes))
+	} else {
+		log.Printf("Flushed %d votes for height %d", len(votes), height)
 	}
 }

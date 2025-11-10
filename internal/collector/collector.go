@@ -81,7 +81,7 @@ type blockInfoSnapshot struct {
 	ConsensusHeight          int64
 	Round                    int32
 	ChainID                  string
-	Tendermint               string
+	CometBFT                 string
 	PreVoteTotalPercent      float64
 	PreVoteWithHashPercent   float64
 	PreCommitTotalPercent    float64
@@ -89,9 +89,9 @@ type blockInfoSnapshot struct {
 }
 
 type chainMetadata struct {
-	ChainID    string
-	Tendermint string
-	LastSync   time.Time
+	ChainID  string
+	CometBFT string
+	LastSync time.Time
 }
 
 type validatorMetricsSnapshot struct {
@@ -164,7 +164,7 @@ func (c *Collector) snapshotToBlockInfo(snapshot blockInfoSnapshot) tui.BlockInf
 		ConsensusHeight:          snapshot.ConsensusHeight,
 		Round:                    snapshot.Round,
 		ChainID:                  snapshot.ChainID,
-		Tendermint:               snapshot.Tendermint,
+		CometBFT:                 snapshot.CometBFT,
 		PreVoteTotalPercent:      snapshot.PreVoteTotalPercent,
 		PreVoteWithHashPercent:   snapshot.PreVoteWithHashPercent,
 		PreCommitTotalPercent:    snapshot.PreCommitTotalPercent,
@@ -228,8 +228,8 @@ func (c *Collector) updateSnapshotChainInfo(meta chainMetadata) {
 		snapshot.ChainID = meta.ChainID
 		updated = true
 	}
-	if meta.Tendermint != "" && snapshot.Tendermint != meta.Tendermint {
-		snapshot.Tendermint = meta.Tendermint
+	if meta.CometBFT != "" && snapshot.CometBFT != meta.CometBFT {
+		snapshot.CometBFT = meta.CometBFT
 		updated = true
 	}
 	if updated {
@@ -354,15 +354,15 @@ func (c *Collector) ensureChainInfo(ctx context.Context) error {
 
 	c.chainInfoMu.Lock()
 	c.chainInfo = chainMetadata{
-		ChainID:    payload.Result.NodeInfo.Network,
-		Tendermint: payload.Result.NodeInfo.Version,
-		LastSync:   time.Now(),
+		ChainID:  payload.Result.NodeInfo.Network,
+		CometBFT: payload.Result.NodeInfo.Version,
+		LastSync: time.Now(),
 	}
 	c.chainInfoMu.Unlock()
 
 	c.updateSnapshotChainInfo(chainMetadata{
-		ChainID:    payload.Result.NodeInfo.Network,
-		Tendermint: payload.Result.NodeInfo.Version,
+		ChainID:  payload.Result.NodeInfo.Network,
+		CometBFT: payload.Result.NodeInfo.Version,
 	})
 
 	return nil
@@ -937,7 +937,7 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 			ConsensusHeight:          consensusHeight,
 			Round:                    consensusRound,
 			ChainID:                  meta.ChainID,
-			Tendermint:               meta.Tendermint,
+			CometBFT:                 meta.CometBFT,
 			PreVoteTotalPercent:      prevoteTotal,
 			PreVoteWithHashPercent:   prevoteWithHash,
 			PreCommitTotalPercent:    precommitTotal,
@@ -1269,8 +1269,8 @@ func (c *Collector) sendConsensusUpdate() {
 	if snapshot.ChainID == "" {
 		snapshot.ChainID = meta.ChainID
 	}
-	if snapshot.Tendermint == "" {
-		snapshot.Tendermint = meta.Tendermint
+	if snapshot.CometBFT == "" {
+		snapshot.CometBFT = meta.CometBFT
 	}
 
 	snapshot.ConsensusHeight = consensusHeight

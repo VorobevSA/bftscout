@@ -79,7 +79,7 @@ type BlockInfo struct {
 	ConsensusHeight          int64
 	Round                    int32
 	ChainID                  string
-	Tendermint               string
+	CometBFT                 string
 	PreVoteTotalPercent      float64 // Percentage of all validators who voted prevote (including nil)
 	PreVoteWithHashPercent   float64 // Percentage of validators with non-nil prevote
 	PreCommitTotalPercent    float64 // Percentage of all validators who voted precommit (including nil)
@@ -215,7 +215,7 @@ func (m Model) View() string {
 		m.currentBlock.ConsensusHeight,
 		m.currentBlock.Round,
 		m.currentBlock.ChainID,
-		m.currentBlock.Tendermint,
+		m.currentBlock.CometBFT,
 		m.currentBlock.PreVoteTotalPercent,
 		m.currentBlock.PreVoteWithHashPercent,
 		m.currentBlock.PreCommitTotalPercent,
@@ -311,7 +311,7 @@ func renderProgressBar(label string, totalPercent, withHashPercent float64, widt
 }
 
 // renderHeader renders the top header section
-func (m Model) renderHeader(blockTimeStr, avgBlockTimeStr, hashStr, proposerStr, moniker string, consensusHeight int64, round int32, chainID, tendermint string, prevoteTotal, prevoteWithHash, precommitTotal, precommitWithHash float64) string {
+func (m Model) renderHeader(blockTimeStr, avgBlockTimeStr, hashStr, proposerStr, moniker string, consensusHeight int64, round int32, chainID, cometbft string, prevoteTotal, prevoteWithHash, precommitTotal, precommitWithHash float64) string {
 	// Calculate column widths (approximately 1/3 each, accounting for borders)
 	colWidth := (m.width - 4) / 3
 	rightColWidth := m.width - colWidth*2 - 4
@@ -332,9 +332,9 @@ func (m Model) renderHeader(blockTimeStr, avgBlockTimeStr, hashStr, proposerStr,
 	if chainID != "" {
 		chainLine = fmt.Sprintf("chain name: %s", chainID)
 	}
-	tmLine := "tendermint version: N/A"
-	if tendermint != "" {
-		tmLine = fmt.Sprintf("tendermint version: %s", tendermint)
+	tmLine := "cometbft version: N/A"
+	if cometbft != "" {
+		tmLine = fmt.Sprintf("cometbft version: %s", cometbft)
 	}
 
 	middleLines := []string{

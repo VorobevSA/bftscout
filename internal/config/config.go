@@ -13,6 +13,7 @@ type Config struct {
 	DBDialect string // postgres only
 	DBDsn     string // DSN string passed to GORM driver
 	AppAPIURL string // optional: Cosmos REST API base URL (e.g., http://node:1317)
+	Debug     bool   // if true: show logs, no TUI; if false: no logs, show TUI
 }
 
 func getenv(key, def string) string {
@@ -21,6 +22,14 @@ func getenv(key, def string) string {
 		return def
 	}
 	return v
+}
+
+func getenvBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	return v == "true" || v == "1" || v == "yes" || v == "on"
 }
 
 // parseDatabaseURL interprets DATABASE_URL and returns (dialect, dsn).
@@ -50,6 +59,7 @@ func Load() Config {
 				DBDialect: dialect,
 				DBDsn:     dsn,
 				AppAPIURL: os.Getenv("APP_API_URL"),
+				Debug:     getenvBool("DEBUG", false),
 			}
 		}
 		// If parsing failed, fall back to legacy envs below
@@ -62,6 +72,7 @@ func Load() Config {
 		DBDialect: "postgres",
 		DBDsn:     "host=localhost user=postgres password=postgres dbname=consensus port=5432 sslmode=disable",
 		AppAPIURL: os.Getenv("APP_API_URL"),
+		Debug:     getenvBool("DEBUG", false),
 	}
 }
 

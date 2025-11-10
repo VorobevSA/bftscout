@@ -2,33 +2,34 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"consensus-monitoring/internal/collector"
 	"consensus-monitoring/internal/config"
 	dbpkg "consensus-monitoring/internal/db"
+	"consensus-monitoring/internal/logger"
+	"consensus-monitoring/internal/tui"
 
 	"github.com/joho/godotenv"
 )
 
 func main() {
-	log.Printf("Consensus monitor starting")
 	// Try to load .env from CWD if present; otherwise use environment as-is
 	if _, statErr := os.Stat(".env"); statErr == nil {
-		if err := godotenv.Load(".env"); err == nil {
-			log.Printf(".env loaded")
-		} else {
-			log.Printf(".env present but failed to load: %v", err)
-		}
-	} else {
-		wd, _ := os.Getwd()
-		log.Printf(".env not found in CWD: %s (using environment)", wd)
+		_ = godotenv.Load(".env")
 	}
+
 	cfg := config.Load()
-	log.Printf("Config loaded: %s", cfg.DebugString())
+	log := logger.New(cfg.Debug)
+
+	fmt.Printf("Consensus monitor starting...\n")
+	fmt.Printf("Config loaded: %s\n", cfg.DebugString())
+	fmt.Printf("Loading...\n")
+
 	gormDB, err := dbpkg.Open(cfg)
 	if err != nil {
 		log.Fatalf("failed to connect database: %v", err)
@@ -43,7 +44,21 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	coll, err := collector.NewCollector(cfg, gormDB)
+	// Create channel for TUI updates (only if not in debug mode)
+	var tuiUpdateCh chan interface{}
+	if !cfg.Debug {
+		tuiUpdateCh = make(chan interface{}, 100)
+		// Start TUI in a goroutine
+		go func() {
+			if err := tui.Run(tuiUpdateCh); err != nil {
+				log.Printf("TUI error: %v", err)
+			}
+			// TUI exited, cancel context to trigger shutdown
+			cancel()
+		}()
+	}
+
+	coll, err := collector.NewCollector(cfg, gormDB, tuiUpdateCh, log)
 	if err != nil {
 		log.Fatalf("failed to init collector: %v", err)
 	}
@@ -58,8 +73,16 @@ func main() {
 	<-ctx.Done()
 	log.Println("shutting down...")
 
+	// Close collector first (this will stop all goroutines and connections)
 	if err := coll.Close(); err != nil {
 		log.Printf("close error: %v", err)
+	}
+
+	// Close TUI update channel to stop sending updates
+	if tuiUpdateCh != nil {
+		close(tuiUpdateCh)
+		// Give TUI a moment to process the close and quit
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	// Ensure logs flushed in some environments

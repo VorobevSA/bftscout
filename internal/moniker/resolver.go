@@ -4,12 +4,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"consensus-monitoring/internal/logger"
 )
+
+// validatorCacheEntry stores validator information in cache
+type validatorCacheEntry struct {
+	Moniker     string
+	VotingPower int64
+}
 
 // Resolver fetches and caches mapping from consensus hex address to moniker
 // by querying RPC /validators and REST /cosmos/staking/v1beta1/validators
@@ -17,21 +26,23 @@ import (
 type Resolver struct {
 	rpcURL    string
 	appURL    string
+	log       *logger.Logger
 	mu        sync.RWMutex
-	cache     map[string]string // hex_cons_addr -> moniker
+	cache     map[string]validatorCacheEntry // hex_cons_addr -> validator info
 	lastFetch time.Time
 	ttl       time.Duration
 	client    *http.Client
 }
 
-func NewResolver(rpcURL, appURL string) *Resolver {
+func NewResolver(rpcURL, appURL string, log *logger.Logger) *Resolver {
 	if rpcURL == "" || appURL == "" {
 		return nil
 	}
 	return &Resolver{
 		rpcURL: rpcURL,
 		appURL: strings.TrimSuffix(appURL, "/"),
-		cache:  map[string]string{},
+		log:    log,
+		cache:  map[string]validatorCacheEntry{},
 		ttl:    30 * time.Minute, // Validators change rarely
 		client: &http.Client{Timeout: 10 * time.Second},
 	}
@@ -45,9 +56,9 @@ func (r *Resolver) Resolve(consAddrHex string) string {
 
 	// Fast path: cached
 	r.mu.RLock()
-	if m, ok := r.cache[key]; ok {
+	if entry, ok := r.cache[key]; ok {
 		r.mu.RUnlock()
-		return m
+		return entry.Moniker
 	}
 	stale := time.Since(r.lastFetch) > r.ttl
 	r.mu.RUnlock()
@@ -57,9 +68,9 @@ func (r *Resolver) Resolve(consAddrHex string) string {
 	}
 
 	r.mu.RLock()
-	m := r.cache[key]
+	entry := r.cache[key]
 	r.mu.RUnlock()
-	return m
+	return entry.Moniker
 }
 
 func (r *Resolver) refresh() {
@@ -73,34 +84,56 @@ func (r *Resolver) refresh() {
 	// Fetch validators from RPC
 	rpcVals, err := r.fetchRPCValidators()
 	if err != nil {
-		log.Printf("moniker resolver: failed to fetch RPC validators: %v", err)
+		if r.log != nil {
+			r.log.Printf("moniker resolver: failed to fetch RPC validators: %v", err)
+		}
 		return
 	}
-	log.Printf("moniker resolver: fetched %d validators from RPC", len(rpcVals))
+	if r.log != nil {
+		r.log.Printf("moniker resolver: fetched %d validators from RPC", len(rpcVals))
+	}
 
 	// Fetch validators from REST API
 	restVals, err := r.fetchRESTValidators()
 	if err != nil {
-		log.Printf("moniker resolver: failed to fetch REST validators: %v", err)
+		if r.log != nil {
+			r.log.Printf("moniker resolver: failed to fetch REST validators: %v", err)
+		}
 		return
 	}
-	log.Printf("moniker resolver: fetched %d validators from REST API", len(restVals))
+	if r.log != nil {
+		r.log.Printf("moniker resolver: fetched %d validators from REST API", len(restVals))
+	}
 
-	// Build mapping: cons_addr -> moniker by matching pub_key
-	mapping := make(map[string]string)
+	// Build mapping: cons_addr -> validator info by matching pub_key
+	mapping := make(map[string]validatorCacheEntry)
 	matched := 0
 	skipped := 0
+
+	// Parse voting_power from RPC validators
 	for _, rpcVal := range rpcVals {
 		if rpcVal.Address == "" || rpcVal.PubKey.Value == "" {
 			skipped++
 			continue
 		}
+
+		// Parse voting_power (it's a string in JSON)
+		votingPower := int64(0)
+		if rpcVal.VotingPower != "" {
+			if vp, err := strconv.ParseInt(rpcVal.VotingPower, 10, 64); err == nil {
+				votingPower = vp
+			}
+		}
+
 		// Find matching REST validator by pub_key
 		found := false
 		for _, restVal := range restVals {
 			if r.matchPubKey(rpcVal.PubKey.Value, restVal.PubKey.Key) {
 				addr := strings.TrimPrefix(strings.ToUpper(rpcVal.Address), "0X")
-				mapping[addr] = restVal.Moniker
+				mapping[addr] = validatorCacheEntry{
+					Moniker:     restVal.Moniker,
+					VotingPower: votingPower,
+				}
 				matched++
 				found = true
 				break
@@ -109,13 +142,73 @@ func (r *Resolver) refresh() {
 		if !found {
 			// RPC validator not found in REST API (may be inactive/unbonded)
 			addr := strings.TrimPrefix(strings.ToUpper(rpcVal.Address), "0X")
-			mapping[addr] = "" // Store address even without moniker
+			mapping[addr] = validatorCacheEntry{
+				Moniker:     "",
+				VotingPower: votingPower,
+			}
 		}
 	}
 
 	r.cache = mapping
 	r.lastFetch = time.Now()
-	log.Printf("moniker resolver: matched %d/%d RPC validators with REST API, cached %d monikers", matched, len(rpcVals)-skipped, matched)
+	if r.log != nil {
+		r.log.Printf("moniker resolver: matched %d/%d RPC validators with REST API, cached %d monikers", matched, len(rpcVals)-skipped, matched)
+	}
+}
+
+// ValidatorInfo represents a validator with address, moniker, voting power and percentage
+type ValidatorInfo struct {
+	Address      string
+	Moniker      string
+	VotingPower  int64
+	PowerPercent float64
+}
+
+// GetValidators returns list of all validators with voting power and percentages
+func (r *Resolver) GetValidators() []ValidatorInfo {
+	if r == nil {
+		return nil
+	}
+
+	// Ensure cache is fresh
+	r.mu.RLock()
+	stale := time.Since(r.lastFetch) > r.ttl || len(r.cache) == 0
+	r.mu.RUnlock()
+
+	if stale {
+		r.refresh()
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Calculate total voting power
+	var totalPower int64
+	for _, entry := range r.cache {
+		totalPower += entry.VotingPower
+	}
+
+	// Build validators list with percentages
+	validators := make([]ValidatorInfo, 0, len(r.cache))
+	for addr, entry := range r.cache {
+		powerPercent := float64(0)
+		if totalPower > 0 {
+			powerPercent = float64(entry.VotingPower) / float64(totalPower) * 100.0
+		}
+		validators = append(validators, ValidatorInfo{
+			Address:      addr,
+			Moniker:      entry.Moniker,
+			VotingPower:  entry.VotingPower,
+			PowerPercent: powerPercent,
+		})
+	}
+
+	// Sort validators by voting power (descending)
+	sort.Slice(validators, func(i, j int) bool {
+		return validators[i].VotingPower > validators[j].VotingPower
+	})
+
+	return validators
 }
 
 type rpcValidator struct {
@@ -124,6 +217,8 @@ type rpcValidator struct {
 		Type  string `json:"type"`
 		Value string `json:"value"`
 	} `json:"pub_key"`
+	VotingPower      string `json:"voting_power"`
+	ProposerPriority string `json:"proposer_priority"`
 }
 
 type rpcValidatorsResp struct {

@@ -1,0 +1,93 @@
+version: "2"
+run:
+  concurrency: 4
+  go: "1.24.5"
+  tests: true
+issues:
+  max-issues-per-linter: 100
+  max-same-issues: 10
+linters:
+  enable:
+    - asciicheck
+    - dogsled
+    - dupl
+    - goconst
+    - gocritic
+    - gomodguard
+    - gosec
+    - misspell
+    - nakedret
+    - nolintlint
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - errcheck
+    - gocyclo
+    - mnd
+    - ineffassign
+    - unused
+  settings:
+    dogsled:
+      max-blank-identifiers: 3
+    dupl:
+      threshold: 150
+    misspell:
+      locale: US
+    nolintlint:
+      require-explanation: false
+      require-specific: false
+      allow-unused: false
+    staticcheck:
+      checks:
+        - -SA1019
+        - All
+    gocyclo:
+      min-complexity: 15
+    mnd:
+      settings:
+        checks: argument,case,condition,operation,return,assign
+    revive:
+      rules:
+        - name: var-naming
+        - name: package-comments
+        - name: range
+        - name: time-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: time-naming
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+      - x/evm/core
+    rules:
+      - path: _test\.go
+        linters:
+          - dupl
+      - path: api/types/types\.go
+        text: "var-naming: avoid meaningless package names"
+        linters:
+          - revive
+      - path: api/utils/.*\.go
+        text: "var-naming: avoid meaningless package names"
+        linters:
+          - revive
+formatters:
+  enable:
+    - gofumpt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

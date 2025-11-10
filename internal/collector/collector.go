@@ -58,6 +58,9 @@ type Collector struct {
 	chainInfo       chainMetadata
 	chainInfoMu     sync.RWMutex
 	httpClient      *http.Client
+	metricsMu       sync.RWMutex
+	proposerStats   map[string]localProposerStats
+	voteStats       map[string]localVoteStats
 }
 
 // validatorVoteState tracks vote status for a validator
@@ -68,17 +71,21 @@ type validatorVoteState struct {
 
 // blockInfoSnapshot mirrors tui.BlockInfo without importing the package
 type blockInfoSnapshot struct {
-	Height          int64
-	Hash            string
-	Time            time.Time
-	Proposer        string
-	Moniker         string
-	BlockTime       time.Duration
-	AvgBlockTime    time.Duration
-	ConsensusHeight int64
-	Round           int32
-	ChainID         string
-	Tendermint      string
+	Height                   int64
+	Hash                     string
+	Time                     time.Time
+	Proposer                 string
+	Moniker                  string
+	BlockTime                time.Duration
+	AvgBlockTime             time.Duration
+	ConsensusHeight          int64
+	Round                    int32
+	ChainID                  string
+	Tendermint               string
+	PreVoteTotalPercent      float64
+	PreVoteWithHashPercent   float64
+	PreCommitTotalPercent    float64
+	PreCommitWithHashPercent float64
 }
 
 type chainMetadata struct {
@@ -87,20 +94,124 @@ type chainMetadata struct {
 	LastSync   time.Time
 }
 
+type validatorMetricsSnapshot struct {
+	ProposerSuccessRate float64
+	NonNilVoteRate      float64
+	HasProposerStats    bool
+	HasVoteStats        bool
+}
+
+type localProposerStats struct {
+	total           int64
+	success         int64
+	lastBlockHeight int64 // Track last block height to avoid double-counting
+}
+
+type localVoteStats struct {
+	total  int64
+	nonNil int64
+}
+
+func (c *Collector) calculateVotePercentages() (float64, float64, float64, float64) {
+	// Get total number of validators
+	validators := c.getValidatorCacheSnapshot()
+	totalValidators := len(validators)
+	if totalValidators == 0 {
+		return 0.0, 0.0, 0.0, 0.0
+	}
+
+	c.voteStatesMu.RLock()
+	defer c.voteStatesMu.RUnlock()
+
+	prevoteTotal := 0      // All prevotes (including nil)
+	prevoteWithHash := 0   // Prevotes with non-nil hash
+	precommitTotal := 0    // All precommits (including nil)
+	precommitWithHash := 0 // Precommits with non-nil hash
+
+	for _, state := range c.currentVoteStates {
+		if state.PreVote > 0 { // Any prevote (1 = nil, 2 = valid hash)
+			prevoteTotal++
+			if state.PreVote == 2 { // valid hash
+				prevoteWithHash++
+			}
+		}
+		if state.PreCommit > 0 { // Any precommit (1 = nil, 2 = valid hash)
+			precommitTotal++
+			if state.PreCommit == 2 { // valid hash
+				precommitWithHash++
+			}
+		}
+	}
+
+	// Calculate percentages based on total validators
+	prevoteTotalPercent := float64(prevoteTotal) / float64(totalValidators) * 100.0
+	prevoteWithHashPercent := float64(prevoteWithHash) / float64(totalValidators) * 100.0
+	precommitTotalPercent := float64(precommitTotal) / float64(totalValidators) * 100.0
+	precommitWithHashPercent := float64(precommitWithHash) / float64(totalValidators) * 100.0
+
+	return prevoteTotalPercent, prevoteWithHashPercent, precommitTotalPercent, precommitWithHashPercent
+}
+
 func (c *Collector) snapshotToBlockInfo(snapshot blockInfoSnapshot) tui.BlockInfo {
 	return tui.BlockInfo{
-		Height:          snapshot.Height,
-		Hash:            snapshot.Hash,
-		Time:            snapshot.Time,
-		Proposer:        snapshot.Proposer,
-		Moniker:         snapshot.Moniker,
-		BlockTime:       snapshot.BlockTime,
-		AvgBlockTime:    snapshot.AvgBlockTime,
-		ConsensusHeight: snapshot.ConsensusHeight,
-		Round:           snapshot.Round,
-		ChainID:         snapshot.ChainID,
-		Tendermint:      snapshot.Tendermint,
+		Height:                   snapshot.Height,
+		Hash:                     snapshot.Hash,
+		Time:                     snapshot.Time,
+		Proposer:                 snapshot.Proposer,
+		Moniker:                  snapshot.Moniker,
+		BlockTime:                snapshot.BlockTime,
+		AvgBlockTime:             snapshot.AvgBlockTime,
+		ConsensusHeight:          snapshot.ConsensusHeight,
+		Round:                    snapshot.Round,
+		ChainID:                  snapshot.ChainID,
+		Tendermint:               snapshot.Tendermint,
+		PreVoteTotalPercent:      snapshot.PreVoteTotalPercent,
+		PreVoteWithHashPercent:   snapshot.PreVoteWithHashPercent,
+		PreCommitTotalPercent:    snapshot.PreCommitTotalPercent,
+		PreCommitWithHashPercent: snapshot.PreCommitWithHashPercent,
 	}
+}
+
+func (c *Collector) recordProposerRound(address string) {
+	if address == "" {
+		return
+	}
+	c.metricsMu.Lock()
+	stats := c.proposerStats[address]
+	stats.total++
+	c.proposerStats[address] = stats
+	c.metricsMu.Unlock()
+}
+
+func (c *Collector) recordProposerSuccess(address string, blockHeight int64) {
+	if address == "" {
+		return
+	}
+	c.metricsMu.Lock()
+	stats := c.proposerStats[address]
+	// Only record success if:
+	// 1. The validator was already recorded as a proposer (total > 0)
+	// 2. This block height hasn't been counted yet (to avoid double-counting)
+	if stats.total > 0 && stats.lastBlockHeight != blockHeight {
+		stats.success++
+		stats.lastBlockHeight = blockHeight
+		c.proposerStats[address] = stats
+	}
+	c.metricsMu.Unlock()
+}
+
+func (c *Collector) recordVote(address string, hasHash bool) {
+	if address == "" {
+		return
+	}
+	c.metricsMu.Lock()
+	stats := c.voteStats[address]
+	stats.total++
+	if hasHash {
+		stats.nonNil++
+	}
+	c.voteStats[address] = stats
+	c.metricsMu.Unlock()
 }
 
 func (c *Collector) getChainInfo() chainMetadata {
@@ -131,6 +242,35 @@ func (c *Collector) updateSnapshotChainInfo(meta chainMetadata) {
 	}
 }
 
+func (c *Collector) updateSnapshotProposer(proposer, moniker string, broadcast bool) {
+	if proposer == "" {
+		return
+	}
+	if moniker == "" {
+		moniker = c.resolveMoniker(proposer)
+	}
+
+	c.lastBlockInfoMu.Lock()
+	snapshot := c.lastBlockInfo
+	changed := snapshot.Proposer != proposer || snapshot.Moniker != moniker
+	if changed {
+		snapshot.Proposer = proposer
+		snapshot.Moniker = moniker
+		c.lastBlockInfo = snapshot
+	}
+	c.lastBlockInfoMu.Unlock()
+
+	if changed && broadcast {
+		c.enqueueTUI(c.snapshotToBlockInfo(snapshot))
+	}
+}
+
+func (c *Collector) getCurrentProposer() string {
+	c.lastBlockInfoMu.RLock()
+	defer c.lastBlockInfoMu.RUnlock()
+	return c.lastBlockInfo.Proposer
+}
+
 func NewCollector(cfg config.Config, db *gorm.DB, tuiUpdateCh chan<- interface{}, log *logger.Logger) (*Collector, error) {
 	// rpchttp.New takes RPC base URL and WS path separately
 	c, err := rpchttp.New(cfg.RPCURL, cfg.WSURL())
@@ -149,6 +289,8 @@ func NewCollector(cfg config.Config, db *gorm.DB, tuiUpdateCh chan<- interface{}
 		blockTimeHistory:  make([]time.Duration, 0),
 		maxHistorySize:    20, // Keep last 20 blocks for average calculation
 		httpClient:        &http.Client{Timeout: 5 * time.Second},
+		proposerStats:     make(map[string]localProposerStats),
+		voteStats:         make(map[string]localVoteStats),
 	}
 
 	return collector, nil
@@ -484,6 +626,9 @@ func (c *Collector) sendValidatorsToTUI() {
 		return
 	}
 
+	metrics := c.getValidatorMetricsSnapshot()
+	currentProposer := c.getCurrentProposer()
+
 	// Get current consensus height
 	consensusHeight, _ := c.getConsensusState()
 
@@ -501,29 +646,45 @@ func (c *Collector) sendValidatorsToTUI() {
 
 	// Convert moniker.ValidatorInfo to tui.ValidatorInfo with vote states
 	tuiValidators := make([]struct {
-		Address      string
-		Moniker      string
-		VotingPower  int64
-		PowerPercent float64
-		PreVote      int
-		PreCommit    int
+		Address             string
+		Moniker             string
+		VotingPower         int64
+		PowerPercent        float64
+		ProposerSuccessRate float64
+		NonNilVoteRate      float64
+		HasProposerStats    bool
+		HasVoteStats        bool
+		IsCurrentProposer   bool
+		PreVote             int
+		PreCommit           int
 	}, len(validators))
 	for i, v := range validators {
 		state := voteStates[v.Address]
+		stats := metrics[v.Address]
 		tuiValidators[i] = struct {
-			Address      string
-			Moniker      string
-			VotingPower  int64
-			PowerPercent float64
-			PreVote      int
-			PreCommit    int
+			Address             string
+			Moniker             string
+			VotingPower         int64
+			PowerPercent        float64
+			ProposerSuccessRate float64
+			NonNilVoteRate      float64
+			HasProposerStats    bool
+			HasVoteStats        bool
+			IsCurrentProposer   bool
+			PreVote             int
+			PreCommit           int
 		}{
-			Address:      v.Address,
-			Moniker:      v.Moniker,
-			VotingPower:  v.VotingPower,
-			PowerPercent: v.PowerPercent,
-			PreVote:      state.PreVote,
-			PreCommit:    state.PreCommit,
+			Address:             v.Address,
+			Moniker:             v.Moniker,
+			VotingPower:         v.VotingPower,
+			PowerPercent:        v.PowerPercent,
+			ProposerSuccessRate: stats.ProposerSuccessRate,
+			NonNilVoteRate:      stats.NonNilVoteRate,
+			HasProposerStats:    stats.HasProposerStats,
+			HasVoteStats:        stats.HasVoteStats,
+			IsCurrentProposer:   strings.EqualFold(v.Address, currentProposer),
+			PreVote:             state.PreVote,
+			PreCommit:           state.PreCommit,
 		}
 	}
 
@@ -597,9 +758,6 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 		c.resetVoteStates()
 		c.sendVoteStatesUpdate()
 	}
-	if heightChanged || roundChanged {
-		c.sendConsensusUpdate()
-	}
 
 	// 1) Try from event payload (stable across versions): value.proposer.address
 	proposer := ""
@@ -618,11 +776,20 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 		proposer = c.tryResolveProposerAddress(context.Background(), height, int32(round))
 	}
 
+	proposerMoniker := c.resolveMoniker(proposer)
+
+	c.recordProposerRound(proposer)
+	c.updateSnapshotProposer(proposer, proposerMoniker, false)
+
+	if heightChanged || roundChanged || proposer != "" {
+		c.sendConsensusUpdate()
+	}
+
 	rec := models.RoundProposer{
 		Height:          height,
 		Round:           int32(round),
 		ProposerAddress: proposer,
-		ProposerMoniker: c.resolveMoniker(proposer),
+		ProposerMoniker: proposerMoniker,
 		Succeeded:       false,
 	}
 	if c.db == nil {
@@ -637,7 +804,7 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 		if existing.ProposerAddress == "" && proposer != "" {
 			existing.ProposerAddress = proposer
 			if existing.ProposerMoniker == "" {
-				existing.ProposerMoniker = c.resolveMoniker(proposer)
+				existing.ProposerMoniker = proposerMoniker
 			}
 			_ = c.db.Save(&existing).Error
 		}
@@ -677,6 +844,9 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 		ProposerMoniker: proposerMoniker,
 		CommitSucceeded: true,
 	}
+
+	c.recordProposerSuccess(proposerAddr, b.Height)
+
 	if c.db != nil {
 		_ = c.db.Where(models.Block{Height: b.Height}).Assign(b).FirstOrCreate(&b).Error
 	}
@@ -754,19 +924,24 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 		}
 
 		meta := c.getChainInfo()
+		prevoteTotal, prevoteWithHash, precommitTotal, precommitWithHash := c.calculateVotePercentages()
 
 		snapshot := blockInfoSnapshot{
-			Height:          b.Height,
-			Hash:            b.Hash,
-			Time:            blk.Header.Time,
-			Proposer:        proposerAddr,
-			Moniker:         proposerMoniker,
-			BlockTime:       blockTime,
-			AvgBlockTime:    avgBlockTime,
-			ConsensusHeight: consensusHeight,
-			Round:           consensusRound,
-			ChainID:         meta.ChainID,
-			Tendermint:      meta.Tendermint,
+			Height:                   b.Height,
+			Hash:                     b.Hash,
+			Time:                     blk.Header.Time,
+			Proposer:                 proposerAddr,
+			Moniker:                  proposerMoniker,
+			BlockTime:                blockTime,
+			AvgBlockTime:             avgBlockTime,
+			ConsensusHeight:          consensusHeight,
+			Round:                    consensusRound,
+			ChainID:                  meta.ChainID,
+			Tendermint:               meta.Tendermint,
+			PreVoteTotalPercent:      prevoteTotal,
+			PreVoteWithHashPercent:   prevoteWithHash,
+			PreCommitTotalPercent:    precommitTotal,
+			PreCommitWithHashPercent: precommitWithHash,
 		}
 
 		c.lastBlockInfoMu.Lock()
@@ -895,9 +1070,6 @@ func (c *Collector) handleProposerFromAttributes(ev rpccoretypes.ResultEvent) {
 	if attrs == nil {
 		return
 	}
-	if c.db == nil {
-		return
-	}
 	proposer := extractProposerFromAttributes(attrs)
 	if proposer == "" {
 		return
@@ -914,22 +1086,33 @@ func (c *Collector) handleProposerFromAttributes(ev rpccoretypes.ResultEvent) {
 		return
 	}
 	round := int32(round64)
+
+	proposerMoniker := c.resolveMoniker(proposer)
+
 	// Upsert into DB
-	var rp models.RoundProposer
-	if err := c.db.Where("height = ? AND round = ?", height, round).First(&rp).Error; err == nil {
-		if rp.ProposerAddress == "" {
-			rp.ProposerAddress = proposer
-			_ = c.db.Save(&rp).Error
+	if c.db != nil {
+		var rp models.RoundProposer
+		if err := c.db.Where("height = ? AND round = ?", height, round).First(&rp).Error; err == nil {
+			if rp.ProposerAddress == "" {
+				rp.ProposerAddress = proposer
+				if rp.ProposerMoniker == "" {
+					rp.ProposerMoniker = proposerMoniker
+				}
+				_ = c.db.Save(&rp).Error
+			}
+		} else {
+			_ = c.db.Create(&models.RoundProposer{
+				Height:          height,
+				Round:           round,
+				ProposerAddress: proposer,
+				ProposerMoniker: proposerMoniker,
+				Succeeded:       false,
+			}).Error
 		}
-	} else {
-		_ = c.db.Create(&models.RoundProposer{
-			Height:          height,
-			Round:           round,
-			ProposerAddress: proposer,
-			ProposerMoniker: "",
-			Succeeded:       false,
-		}).Error
 	}
+
+	c.recordProposerRound(proposer)
+	c.updateSnapshotProposer(proposer, proposerMoniker, true)
 }
 
 func firstAttr(attrs map[string][]string, keys []string) string {
@@ -999,6 +1182,40 @@ func (c *Collector) getValidatorCacheSnapshot() []moniker.ValidatorInfo {
 	return snapshot
 }
 
+func (c *Collector) getValidatorMetricsSnapshot() map[string]validatorMetricsSnapshot {
+	c.metricsMu.RLock()
+	defer c.metricsMu.RUnlock()
+
+	result := make(map[string]validatorMetricsSnapshot, len(c.proposerStats)+len(c.voteStats))
+
+	for addr, stat := range c.proposerStats {
+		if stat.total == 0 {
+			continue
+		}
+		entry := result[addr]
+		// Calculate percentage, ensuring it doesn't exceed 100%
+		rate := float64(stat.success) / float64(stat.total) * 100.0
+		if rate > 100.0 {
+			rate = 100.0
+		}
+		entry.ProposerSuccessRate = rate
+		entry.HasProposerStats = true
+		result[addr] = entry
+	}
+
+	for addr, stat := range c.voteStats {
+		if stat.total == 0 {
+			continue
+		}
+		entry := result[addr]
+		entry.NonNilVoteRate = float64(stat.nonNil) / float64(stat.total) * 100.0
+		entry.HasVoteStats = true
+		result[addr] = entry
+	}
+
+	return result
+}
+
 func (c *Collector) updateConsensusState(height int64, round int32) (bool, bool) {
 	heightChanged := false
 	roundChanged := false
@@ -1058,6 +1275,11 @@ func (c *Collector) sendConsensusUpdate() {
 
 	snapshot.ConsensusHeight = consensusHeight
 	snapshot.Round = consensusRound
+	prevoteTotal, prevoteWithHash, precommitTotal, precommitWithHash := c.calculateVotePercentages()
+	snapshot.PreVoteTotalPercent = prevoteTotal
+	snapshot.PreVoteWithHashPercent = prevoteWithHash
+	snapshot.PreCommitTotalPercent = precommitTotal
+	snapshot.PreCommitWithHashPercent = precommitWithHash
 	c.lastBlockInfo = snapshot
 	c.lastBlockInfoMu.Unlock()
 
@@ -1122,6 +1344,8 @@ func (c *Collector) handleVote(ev rpccoretypes.ResultEvent) {
 	c.pendingVotes[vote.Height] = append(c.pendingVotes[vote.Height], roundVote)
 	c.votesMu.Unlock()
 
+	c.recordVote(validatorAddr, hasHash)
+
 	consensusHeight, _ := c.getConsensusState()
 	if consensusHeight > 0 && vote.Height == consensusHeight {
 		c.voteStatesMu.Lock()
@@ -1143,6 +1367,8 @@ func (c *Collector) handleVote(ev rpccoretypes.ResultEvent) {
 		c.voteStatesMu.Unlock()
 
 		c.sendVoteStatesUpdate()
+		// Also update consensus info to refresh progress bars
+		c.sendConsensusUpdate()
 	}
 }
 

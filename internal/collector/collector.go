@@ -625,6 +625,9 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 		ProposerMoniker: c.resolveMoniker(proposer),
 		Succeeded:       false,
 	}
+	if c.db == nil {
+		return
+	}
 	// Try create; if exists, ignore
 	_ = c.db.Create(&rec).Error
 
@@ -674,7 +677,9 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 		ProposerMoniker: proposerMoniker,
 		CommitSucceeded: true,
 	}
-	_ = c.db.Where(models.Block{Height: b.Height}).Assign(b).FirstOrCreate(&b).Error
+	if c.db != nil {
+		_ = c.db.Where(models.Block{Height: b.Height}).Assign(b).FirstOrCreate(&b).Error
+	}
 
 	// Log processed block
 	if proposerMoniker != "" {
@@ -784,26 +789,28 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 
 	// Mark succeeded round for this height.
 	// We may not know exact round from event; heuristic: mark max(round) for height.
-	var r models.RoundProposer
-	tx := c.db.Where("height = ?", b.Height).Order("round DESC").First(&r)
-	if tx.Error == nil {
-		if !r.Succeeded {
-			r.Succeeded = true
-			if r.ProposerAddress == "" {
-				r.ProposerAddress = b.ProposerAddress
+	if c.db != nil {
+		var r models.RoundProposer
+		tx := c.db.Where("height = ?", b.Height).Order("round DESC").First(&r)
+		if tx.Error == nil {
+			if !r.Succeeded {
+				r.Succeeded = true
+				if r.ProposerAddress == "" {
+					r.ProposerAddress = b.ProposerAddress
+				}
+				_ = c.db.Save(&r).Error
 			}
-			_ = c.db.Save(&r).Error
 		}
-	}
 
-	if tx.Error != nil {
-		// No round observed; create a synthetic round 0 as succeeded
-		_ = c.db.Create(&models.RoundProposer{
-			Height:          b.Height,
-			Round:           0,
-			ProposerAddress: b.ProposerAddress,
-			Succeeded:       true,
-		}).Error
+		if tx.Error != nil {
+			// No round observed; create a synthetic round 0 as succeeded
+			_ = c.db.Create(&models.RoundProposer{
+				Height:          b.Height,
+				Round:           0,
+				ProposerAddress: b.ProposerAddress,
+				Succeeded:       true,
+			}).Error
+		}
 	}
 }
 
@@ -886,6 +893,9 @@ func extractProposerFromAttributes(attrs map[string][]string) string {
 func (c *Collector) handleProposerFromAttributes(ev rpccoretypes.ResultEvent) {
 	attrs := ev.Events
 	if attrs == nil {
+		return
+	}
+	if c.db == nil {
 		return
 	}
 	proposer := extractProposerFromAttributes(attrs)
@@ -1148,6 +1158,10 @@ func (c *Collector) flushVotesForHeight(height int64) {
 	// Remove from map to free memory
 	delete(c.pendingVotes, height)
 	c.votesMu.Unlock()
+
+	if c.db == nil {
+		return
+	}
 
 	// Fetch proposers for all rounds of this height
 	roundProposers := make(map[int32]string) // round -> proposer address

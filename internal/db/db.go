@@ -25,6 +25,10 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 		},
 	)
 
+	if cfg.DBDialect == "" || cfg.DBDsn == "" {
+		return nil, nil
+	}
+
 	switch cfg.DBDialect {
 	case "postgres":
 		return gorm.Open(postgres.Open(cfg.DBDsn), &gorm.Config{Logger: newLogger})
@@ -34,6 +38,9 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 }
 
 func AutoMigrate(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
 	return db.AutoMigrate(
 		&models.Block{},
 		&models.RoundProposer{},

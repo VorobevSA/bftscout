@@ -50,30 +50,23 @@ func parseDatabaseURL(databaseURL string) (string, string, error) {
 }
 
 func Load() Config {
-	// Prefer DATABASE_URL if provided
-	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
-		if dialect, dsn, err := parseDatabaseURL(dbURL); err == nil {
-			return Config{
-				RPCURL:    getenv("RPC_URL", "http://localhost:26657"),
-				WSPath:    getenv("WS_PATH", "/websocket"),
-				DBDialect: dialect,
-				DBDsn:     dsn,
-				AppAPIURL: os.Getenv("APP_API_URL"),
-				Debug:     getenvBool("DEBUG", false),
-			}
-		}
-		// If parsing failed, fall back to legacy envs below
-	}
-
-	// Fallback default Postgres DSN
-	return Config{
+	cfg := Config{
 		RPCURL:    getenv("RPC_URL", "http://localhost:26657"),
 		WSPath:    getenv("WS_PATH", "/websocket"),
-		DBDialect: "postgres",
-		DBDsn:     "host=localhost user=postgres password=postgres dbname=consensus port=5432 sslmode=disable",
 		AppAPIURL: os.Getenv("APP_API_URL"),
 		Debug:     getenvBool("DEBUG", false),
 	}
+
+	if dbURL := strings.TrimSpace(os.Getenv("DATABASE_URL")); dbURL != "" {
+		if dialect, dsn, err := parseDatabaseURL(dbURL); err == nil {
+			cfg.DBDialect = dialect
+			cfg.DBDsn = dsn
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: invalid DATABASE_URL, disabling persistence: %v\n", err)
+		}
+	}
+
+	return cfg
 }
 
 func (c Config) WSURL() string {

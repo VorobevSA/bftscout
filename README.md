@@ -4,7 +4,7 @@ A simple Go utility that subscribes to CometBFT consensus events and stores info
 
 ### Features
 - Subscribes to `NewRound` and `NewBlock` events via WebSocket (`/websocket`).
-- Stores data in PostgreSQL database:
+- Optionally stores data in PostgreSQL (if `DATABASE_URL` is provided):
   - `blocks` table: height, hash, time, proposer address, proposer moniker, commit success flag.
   - `round_proposers` table: height, round, proposer address, proposer moniker, success flag.
 - If multiple rounds occur, all are recorded; the round that finalized into a block is marked with `succeeded = true`.
@@ -15,7 +15,7 @@ A simple Go utility that subscribes to CometBFT consensus events and stores info
 ```bash
 export RPC_URL="http://localhost:26657"
 export WS_PATH="/websocket"  # optional, default is /websocket
-export DATABASE_URL="postgres://postgres:postgres@localhost:5432/consensus?sslmode=disable"
+# export DATABASE_URL="postgres://postgres:postgres@localhost:5432/consensus?sslmode=disable"  # optional
 export APP_API_URL="http://localhost:1317"  # optional, for moniker resolution
 
 go run ./cmd/monitor
@@ -26,8 +26,10 @@ go run ./cmd/monitor
 Environment variables:
 - `RPC_URL` - CometBFT RPC endpoint (default: `http://localhost:26657`)
 - `WS_PATH` - WebSocket path (default: `/websocket`)
-- `DATABASE_URL` - PostgreSQL connection URL (required)
+- `DATABASE_URL` - PostgreSQL connection URL (optional; if omitted, data is not persisted)
 - `APP_API_URL` - Cosmos SDK REST API base URL for moniker resolution (optional, default port: 1317)
+
+If `DATABASE_URL` is not provided, the application still runs fully (including TUI updates and logging) but skips all persistence.
 
 The application automatically loads variables from `.env` file if present.
 

@@ -34,12 +34,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect database: %v", err)
 	}
-	log.Printf("DB connected")
+	if gormDB != nil {
+		log.Printf("DB connected")
 
-	if err := dbpkg.AutoMigrate(gormDB); err != nil {
-		log.Fatalf("failed to run migrations: %v", err)
+		if err := dbpkg.AutoMigrate(gormDB); err != nil {
+			log.Fatalf("failed to run migrations: %v", err)
+		}
+		log.Printf("Migrations applied")
+	} else {
+		log.Printf("DATABASE_URL not provided – persistence disabled")
 	}
-	log.Printf("Migrations applied")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

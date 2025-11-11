@@ -28,7 +28,6 @@ Environment variables:
 - `WS_PATH` - WebSocket path (default: `/websocket`)
 - `APP_API_URL` - Cosmos SDK REST API base URL for moniker resolution (optional, default port: 1317; can point to the validator host if the port is exposed)
 - `DATABASE_URL` - PostgreSQL connection URL (optional; if omitted, data is not persisted)
-- `APP_API_URL` - Cosmos SDK REST API base URL for moniker resolution (optional, default port: 1317)
 
 If `DATABASE_URL` is not provided, the application still runs fully (including TUI updates and logging) but skips all persistence.
 

@@ -3,8 +3,18 @@ name: Go Linter
 on:
   push:
     # Trigger on every push to any branch
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.golangci.yml'
   pull_request:
     # Trigger on every pull request to any branch
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.golangci.yml'
 
 permissions:
   contents: read

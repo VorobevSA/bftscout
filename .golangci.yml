@@ -46,41 +46,15 @@ linters:
     gocyclo:
       min-complexity: 15
     mnd:
-      settings:
-        checks: argument,case,condition,operation,return,assign
-    revive:
-      rules:
-        - name: var-naming
-        - name: package-comments
-        - name: range
-        - name: time-naming
-        - name: var-declaration
-        - name: package-comments
-        - name: range
-        - name: time-naming
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
-      - x/evm/core
-    rules:
-      - path: _test\.go
-        linters:
-          - dupl
-      - path: api/types/types\.go
-        text: "var-naming: avoid meaningless package names"
-        linters:
-          - revive
-      - path: api/utils/.*\.go
-        text: "var-naming: avoid meaningless package names"
-        linters:
-          - revive
+      checks:
+        - argument
+        - case
+        - condition
+        - operation
+        - return
+        - assign
 formatters:
   enable:
     - gofumpt
   exclusions:
     generated: lax
-    paths:
-      - third_party$
-      - builtin$
-      - examples$

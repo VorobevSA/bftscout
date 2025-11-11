@@ -1,5 +1,4 @@
 // Package moniker provides functionality to resolve validator consensus addresses to monikers.
-
 package moniker
 
 import (
@@ -110,48 +109,7 @@ func (r *Resolver) refresh() {
 	}
 
 	// Build mapping: cons_addr -> validator info by matching pub_key
-	mapping := make(map[string]validatorCacheEntry)
-	matched := 0
-	skipped := 0
-
-	// Parse voting_power from RPC validators
-	for _, rpcVal := range rpcVals {
-		if rpcVal.Address == "" || rpcVal.PubKey.Value == "" {
-			skipped++
-			continue
-		}
-
-		// Parse voting_power (it's a string in JSON)
-		votingPower := int64(0)
-		if rpcVal.VotingPower != "" {
-			if vp, err := strconv.ParseInt(rpcVal.VotingPower, 10, 64); err == nil {
-				votingPower = vp
-			}
-		}
-
-		// Find matching REST validator by pub_key
-		found := false
-		for _, restVal := range restVals {
-			if r.matchPubKey(rpcVal.PubKey.Value, restVal.PubKey.Key) {
-				addr := strings.TrimPrefix(strings.ToUpper(rpcVal.Address), "0X")
-				mapping[addr] = validatorCacheEntry{
-					Moniker:     restVal.Moniker,
-					VotingPower: votingPower,
-				}
-				matched++
-				found = true
-				break
-			}
-		}
-		if !found {
-			// RPC validator not found in REST API (may be inactive/unbonded)
-			addr := strings.TrimPrefix(strings.ToUpper(rpcVal.Address), "0X")
-			mapping[addr] = validatorCacheEntry{
-				Moniker:     "",
-				VotingPower: votingPower,
-			}
-		}
-	}
+	mapping, matched, skipped := r.buildValidatorMapping(rpcVals, restVals)
 
 	r.cache = mapping
 	r.lastFetch = time.Now()
@@ -333,4 +291,61 @@ func (r *Resolver) matchPubKey(rpcPubKey, restPubKey string) bool {
 		return string(rpcBytes) == string(restBytes)
 	}
 	return false
+}
+
+// buildValidatorMapping builds a mapping from consensus address to validator info by matching pub_key
+func (r *Resolver) buildValidatorMapping(rpcVals []rpcValidator, restVals []restValidator) (map[string]validatorCacheEntry, int, int) {
+	mapping := make(map[string]validatorCacheEntry)
+	matched := 0
+	skipped := 0
+
+	// Parse voting_power from RPC validators
+	for _, rpcVal := range rpcVals {
+		if rpcVal.Address == "" || rpcVal.PubKey.Value == "" {
+			skipped++
+			continue
+		}
+
+		// Parse voting_power (it's a string in JSON)
+		votingPower := r.parseVotingPower(rpcVal.VotingPower)
+
+		// Find matching REST validator by pub_key
+		addr := strings.TrimPrefix(strings.ToUpper(rpcVal.Address), "0X")
+		if moniker := r.findMatchingMoniker(rpcVal.PubKey.Value, restVals); moniker != "" {
+			mapping[addr] = validatorCacheEntry{
+				Moniker:     moniker,
+				VotingPower: votingPower,
+			}
+			matched++
+		} else {
+			// RPC validator not found in REST API (may be inactive/unbonded)
+			mapping[addr] = validatorCacheEntry{
+				Moniker:     "",
+				VotingPower: votingPower,
+			}
+		}
+	}
+
+	return mapping, matched, skipped
+}
+
+// parseVotingPower parses voting power from string
+func (r *Resolver) parseVotingPower(votingPowerStr string) int64 {
+	if votingPowerStr == "" {
+		return 0
+	}
+	if vp, err := strconv.ParseInt(votingPowerStr, 10, 64); err == nil {
+		return vp
+	}
+	return 0
+}
+
+// findMatchingMoniker finds matching REST validator by pub_key and returns moniker
+func (r *Resolver) findMatchingMoniker(rpcPubKey string, restVals []restValidator) string {
+	for _, restVal := range restVals {
+		if r.matchPubKey(rpcPubKey, restVal.PubKey.Key) {
+			return restVal.Moniker
+		}
+	}
+	return ""
 }

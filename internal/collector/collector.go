@@ -1,6 +1,5 @@
 // Package collector provides functionality for collecting consensus events from CometBFT RPC
 // and storing them in a database, as well as updating the TUI with real-time information.
-
 package collector
 
 import (
@@ -799,23 +798,8 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 		c.sendVoteStatesUpdate()
 	}
 
-	// 1) Try from event payload (stable across versions): value.proposer.address
-	proposer := ""
-	// CometBFT types typically expose Proposer with Address bytes
-	// Guarded access to avoid panics on zero-values
-	// NOTE: in some versions Proposer could be nil, so check and format accordingly
-	if len(data.Proposer.Address) > 0 {
-		proposer = fmt.Sprintf("%X", data.Proposer.Address)
-	}
-	// 2) Try from event attributes (tags)
-	if proposer == "" {
-		proposer = extractProposerFromAttributes(ev.Events)
-	}
-	// 2) If still empty, try to resolve via RPC consensus endpoints (best-effort)
-	if proposer == "" {
-		proposer = c.tryResolveProposerAddress(context.Background(), round)
-	}
-
+	// Resolve proposer address from multiple sources
+	proposer := c.resolveProposerAddress(data, ev, round)
 	proposerMoniker := c.resolveMoniker(proposer)
 
 	c.recordProposerRound(proposer)
@@ -839,16 +823,133 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 	_ = c.db.Create(&rec).Error
 
 	// If create failed due to conflict, try to ensure proposer is updated if empty
-	var existing models.RoundProposer
-	if err := c.db.Where("height = ? AND round = ?", height, round).First(&existing).Error; err == nil {
-		if existing.ProposerAddress == "" && proposer != "" {
-			existing.ProposerAddress = proposer
-			if existing.ProposerMoniker == "" {
-				existing.ProposerMoniker = proposerMoniker
-			}
-			_ = c.db.Save(&existing).Error
-		}
+	c.updateExistingProposer(height, round, proposer, proposerMoniker)
+}
+
+// resolveProposerAddress resolves proposer address from multiple sources
+func (c *Collector) resolveProposerAddress(data cmttypes.EventDataNewRound, ev rpccoretypes.ResultEvent, round int32) string {
+	// 1) Try from event payload (stable across versions): value.proposer.address
+	// CometBFT types typically expose Proposer with Address bytes
+	// Guarded access to avoid panics on zero-values
+	// NOTE: in some versions Proposer could be nil, so check and format accordingly
+	if len(data.Proposer.Address) > 0 {
+		return fmt.Sprintf("%X", data.Proposer.Address)
 	}
+	// 2) Try from event attributes (tags)
+	if proposer := extractProposerFromAttributes(ev.Events); proposer != "" {
+		return proposer
+	}
+	// 3) If still empty, try to resolve via RPC consensus endpoints (best-effort)
+	return c.tryResolveProposerAddress(context.Background(), round)
+}
+
+// updateExistingProposer updates existing proposer record if proposer address is empty
+func (c *Collector) updateExistingProposer(height int64, round int32, proposer, proposerMoniker string) {
+	if c.db == nil || proposer == "" {
+		return
+	}
+	var existing models.RoundProposer
+	if err := c.db.Where("height = ? AND round = ?", height, round).First(&existing).Error; err != nil {
+		return
+	}
+	if existing.ProposerAddress == "" {
+		existing.ProposerAddress = proposer
+		if existing.ProposerMoniker == "" {
+			existing.ProposerMoniker = proposerMoniker
+		}
+		_ = c.db.Save(&existing).Error
+	}
+}
+
+// updateBlockTimeHistory updates block time history and calculates average
+func (c *Collector) updateBlockTimeHistory(blockTime time.Time) (blockTimeDuration, avgBlockTime time.Duration) {
+	// Calculate block time (time since previous block)
+	c.prevBlockTimeMu.RLock()
+	prevTime := c.prevBlockTime
+	c.prevBlockTimeMu.RUnlock()
+
+	blockTimeDuration = time.Duration(0)
+	if !prevTime.IsZero() {
+		blockTimeDuration = blockTime.Sub(prevTime)
+	}
+
+	// Update previous block time
+	c.prevBlockTimeMu.Lock()
+	c.prevBlockTime = blockTime
+	c.prevBlockTimeMu.Unlock()
+
+	// Update block time history and calculate average
+	if blockTimeDuration > 0 {
+		c.blockTimeHistoryMu.Lock()
+		c.blockTimeHistory = append(c.blockTimeHistory, blockTimeDuration)
+		// Keep only last N blocks
+		if len(c.blockTimeHistory) > c.maxHistorySize {
+			c.blockTimeHistory = c.blockTimeHistory[len(c.blockTimeHistory)-c.maxHistorySize:]
+		}
+		// Calculate average
+		avgBlockTime = c.calculateAverageBlockTime()
+		c.blockTimeHistoryMu.Unlock()
+	} else {
+		// If no block time yet, get current average
+		c.blockTimeHistoryMu.RLock()
+		avgBlockTime = c.calculateAverageBlockTime()
+		c.blockTimeHistoryMu.RUnlock()
+	}
+
+	return blockTimeDuration, avgBlockTime
+}
+
+// calculateAverageBlockTime calculates average block time from history
+func (c *Collector) calculateAverageBlockTime() time.Duration {
+	if len(c.blockTimeHistory) == 0 {
+		return 0
+	}
+	var total time.Duration
+	for _, bt := range c.blockTimeHistory {
+		total += bt
+	}
+	return total / time.Duration(len(c.blockTimeHistory))
+}
+
+// sendBlockUpdateToTUI sends block update to TUI
+func (c *Collector) sendBlockUpdateToTUI(b models.Block, blockTime time.Time, proposerAddr, proposerMoniker string, blockTimeDuration, avgBlockTime time.Duration, heightChanged, roundChanged bool) {
+	defer func() {
+		if heightChanged || roundChanged {
+			c.sendConsensusUpdate()
+		}
+	}()
+
+	consensusHeight, consensusRound := c.getConsensusState()
+	if consensusHeight < b.Height {
+		consensusHeight = b.Height
+	}
+
+	meta := c.getChainInfo()
+	prevoteTotal, prevoteWithHash, precommitTotal, precommitWithHash := c.calculateVotePercentages()
+
+	snapshot := blockInfoSnapshot{
+		Height:                   b.Height,
+		Hash:                     b.Hash,
+		Time:                     blockTime,
+		Proposer:                 proposerAddr,
+		Moniker:                  proposerMoniker,
+		BlockTime:                blockTimeDuration,
+		AvgBlockTime:             avgBlockTime,
+		ConsensusHeight:          consensusHeight,
+		Round:                    consensusRound,
+		ChainID:                  meta.ChainID,
+		CometBFT:                 meta.CometBFT,
+		PreVoteTotalPercent:      prevoteTotal,
+		PreVoteWithHashPercent:   prevoteWithHash,
+		PreCommitTotalPercent:    precommitTotal,
+		PreCommitWithHashPercent: precommitWithHash,
+	}
+
+	c.lastBlockInfoMu.Lock()
+	c.lastBlockInfo = snapshot
+	c.lastBlockInfoMu.Unlock()
+
+	c.enqueueTUI(c.snapshotToBlockInfo(snapshot))
 }
 
 // Removed CompleteProposal handler due to type differences across versions
@@ -898,51 +999,8 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 		c.log.Printf("Block processed: height=%d hash=%s proposer=%s", b.Height, b.Hash[:16], proposerAddr[:16])
 	}
 
-	// Calculate block time (time since previous block)
-	c.prevBlockTimeMu.RLock()
-	prevTime := c.prevBlockTime
-	c.prevBlockTimeMu.RUnlock()
-
-	blockTime := time.Duration(0)
-	if !prevTime.IsZero() {
-		blockTime = blk.Header.Time.Sub(prevTime)
-	}
-
-	// Update previous block time
-	c.prevBlockTimeMu.Lock()
-	c.prevBlockTime = blk.Header.Time
-	c.prevBlockTimeMu.Unlock()
-
-	// Update block time history and calculate average
-	var avgBlockTime time.Duration
-	if blockTime > 0 {
-		c.blockTimeHistoryMu.Lock()
-		c.blockTimeHistory = append(c.blockTimeHistory, blockTime)
-		// Keep only last N blocks
-		if len(c.blockTimeHistory) > c.maxHistorySize {
-			c.blockTimeHistory = c.blockTimeHistory[len(c.blockTimeHistory)-c.maxHistorySize:]
-		}
-		// Calculate average
-		if len(c.blockTimeHistory) > 0 {
-			var total time.Duration
-			for _, bt := range c.blockTimeHistory {
-				total += bt
-			}
-			avgBlockTime = total / time.Duration(len(c.blockTimeHistory))
-		}
-		c.blockTimeHistoryMu.Unlock()
-	} else {
-		// If no block time yet, get current average
-		c.blockTimeHistoryMu.RLock()
-		if len(c.blockTimeHistory) > 0 {
-			var total time.Duration
-			for _, bt := range c.blockTimeHistory {
-				total += bt
-			}
-			avgBlockTime = total / time.Duration(len(c.blockTimeHistory))
-		}
-		c.blockTimeHistoryMu.RUnlock()
-	}
+	// Calculate block time and update history
+	blockTime, avgBlockTime := c.updateBlockTimeHistory(blk.Header.Time)
 
 	heightChanged, roundChanged := c.updateConsensusState(b.Height, 0)
 	if heightChanged {
@@ -952,43 +1010,7 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 
 	// Send update to TUI if channel is available
 	if c.tuiUpdateCh != nil {
-		defer func(hc, rc bool) {
-			if hc || rc {
-				c.sendConsensusUpdate()
-			}
-		}(heightChanged, roundChanged)
-
-		consensusHeight, consensusRound := c.getConsensusState()
-		if consensusHeight < b.Height {
-			consensusHeight = b.Height
-		}
-
-		meta := c.getChainInfo()
-		prevoteTotal, prevoteWithHash, precommitTotal, precommitWithHash := c.calculateVotePercentages()
-
-		snapshot := blockInfoSnapshot{
-			Height:                   b.Height,
-			Hash:                     b.Hash,
-			Time:                     blk.Header.Time,
-			Proposer:                 proposerAddr,
-			Moniker:                  proposerMoniker,
-			BlockTime:                blockTime,
-			AvgBlockTime:             avgBlockTime,
-			ConsensusHeight:          consensusHeight,
-			Round:                    consensusRound,
-			ChainID:                  meta.ChainID,
-			CometBFT:                 meta.CometBFT,
-			PreVoteTotalPercent:      prevoteTotal,
-			PreVoteWithHashPercent:   prevoteWithHash,
-			PreCommitTotalPercent:    precommitTotal,
-			PreCommitWithHashPercent: precommitWithHash,
-		}
-
-		c.lastBlockInfoMu.Lock()
-		c.lastBlockInfo = snapshot
-		c.lastBlockInfoMu.Unlock()
-
-		c.enqueueTUI(c.snapshotToBlockInfo(snapshot))
+		c.sendBlockUpdateToTUI(b, blk.Header.Time, proposerAddr, proposerMoniker, blockTime, avgBlockTime, heightChanged, roundChanged)
 	}
 
 	// Update current height and reset vote states for new block
@@ -1002,31 +1024,35 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 		c.flushVotesForHeight(prevHeight)
 	}
 
-	// Mark succeeded round for this height.
-	// We may not know exact round from event; heuristic: mark max(round) for height.
-	if c.db != nil {
-		var r models.RoundProposer
-		tx := c.db.Where("height = ?", b.Height).Order("round DESC").First(&r)
-		if tx.Error == nil {
-			if !r.Succeeded {
-				r.Succeeded = true
-				if r.ProposerAddress == "" {
-					r.ProposerAddress = b.ProposerAddress
-				}
-				_ = c.db.Save(&r).Error
-			}
-		}
+	// Mark succeeded round for this height
+	c.markSucceededRound(b.Height, b.ProposerAddress)
+}
 
-		if tx.Error != nil {
-			// No round observed; create a synthetic round 0 as succeeded
-			_ = c.db.Create(&models.RoundProposer{
-				Height:          b.Height,
-				Round:           0,
-				ProposerAddress: b.ProposerAddress,
-				Succeeded:       true,
-			}).Error
-		}
+// markSucceededRound marks the succeeded round for a given height
+func (c *Collector) markSucceededRound(height int64, proposerAddress string) {
+	if c.db == nil {
+		return
 	}
+	// We may not know exact round from event; heuristic: mark max(round) for height
+	var r models.RoundProposer
+	tx := c.db.Where("height = ?", height).Order("round DESC").First(&r)
+	if tx.Error == nil {
+		if !r.Succeeded {
+			r.Succeeded = true
+			if r.ProposerAddress == "" {
+				r.ProposerAddress = proposerAddress
+			}
+			_ = c.db.Save(&r).Error
+		}
+		return
+	}
+	// No round observed; create a synthetic round 0 as succeeded
+	_ = c.db.Create(&models.RoundProposer{
+		Height:          height,
+		Round:           0,
+		ProposerAddress: proposerAddress,
+		Succeeded:       true,
+	}).Error
 }
 
 // tryResolveProposerAddress best-effort fetch of proposer address for a given round

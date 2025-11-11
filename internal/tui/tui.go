@@ -252,35 +252,81 @@ func (m Model) View() string {
 // renderProgressBar creates a progress bar with label and percentage (2 lines high)
 // totalPercent: percentage of all votes (including nil) - shown in gray
 // withHashPercent: percentage of votes with non-nil hash - shown in green (over gray)
-func renderProgressBar(label string, totalPercent, withHashPercent float64, width int) []string {
-	if totalPercent < 0 {
-		totalPercent = 0
+// normalizePercent ensures percent is in valid range [0, maxPercentValue]
+func normalizePercent(percent float64) float64 {
+	if percent < 0 {
+		return 0
 	}
-	if totalPercent > maxPercentValue {
-		totalPercent = maxPercentValue
+	if percent > maxPercentValue {
+		return maxPercentValue
 	}
-	if withHashPercent < 0 {
-		withHashPercent = 0
-	}
-	if withHashPercent > maxPercentValue {
-		withHashPercent = maxPercentValue
-	}
-	if withHashPercent > totalPercent {
-		withHashPercent = totalPercent
-	}
+	return percent
+}
 
-	// Calculate filled widths
-	totalWidth := int(float64(width) * totalPercent / percentMultiplier)
+// calculateProgressWidths calculates the pixel widths for progress bars
+func calculateProgressWidths(totalPercent, withHashPercent float64, width int) (totalWidth, withHashWidth int) {
+	totalWidth = int(float64(width) * totalPercent / percentMultiplier)
 	if totalWidth > width {
 		totalWidth = width
 	}
-	withHashWidth := int(float64(width) * withHashPercent / percentMultiplier)
+	withHashWidth = int(float64(width) * withHashPercent / percentMultiplier)
 	if withHashWidth > width {
 		withHashWidth = width
 	}
 	if withHashWidth > totalWidth {
 		withHashWidth = totalWidth
 	}
+	return totalWidth, withHashWidth
+}
+
+// buildProgressLine1 builds the first line of progress bar with text
+func buildProgressLine1(textLine string, totalWidth, withHashWidth int, grayStyle, greenStyle lipgloss.Style) string {
+	line1 := strings.Builder{}
+	for i, r := range []rune(textLine) {
+		switch {
+		case i < withHashWidth:
+			// In green area (with hash) - apply green background
+			line1.WriteString(greenStyle.Render(string(r)))
+		case i < totalWidth:
+			// In gray area (all votes but nil hash) - apply gray background
+			line1.WriteString(grayStyle.Render(string(r)))
+		default:
+			// In empty area - just the character
+			line1.WriteRune(r)
+		}
+	}
+	return line1.String()
+}
+
+// buildProgressLine2 builds the second line of progress bar without text
+func buildProgressLine2(width, totalWidth, withHashWidth int, grayStyle, greenStyle lipgloss.Style) string {
+	line2 := strings.Builder{}
+	for i := 0; i < width; i++ {
+		switch {
+		case i < withHashWidth:
+			// In green area (with hash) - green background
+			line2.WriteString(greenStyle.Render(" "))
+		case i < totalWidth:
+			// In gray area (all votes but nil hash) - gray background
+			line2.WriteString(grayStyle.Render(" "))
+		default:
+			// In empty area - just space
+			line2.WriteString(" ")
+		}
+	}
+	return line2.String()
+}
+
+func renderProgressBar(label string, totalPercent, withHashPercent float64, width int) []string {
+	// Normalize percentages
+	totalPercent = normalizePercent(totalPercent)
+	withHashPercent = normalizePercent(withHashPercent)
+	if withHashPercent > totalPercent {
+		withHashPercent = totalPercent
+	}
+
+	// Calculate filled widths
+	totalWidth, withHashWidth := calculateProgressWidths(totalPercent, withHashPercent, width)
 
 	// Format percentage text (show withHashPercent)
 	percentText := fmt.Sprintf("%s: %.0f%%", label, withHashPercent)
@@ -297,39 +343,11 @@ func renderProgressBar(label string, totalPercent, withHashPercent float64, widt
 	}
 	textLine := strings.Repeat(" ", spacesBefore) + percentText + strings.Repeat(" ", width-spacesBefore-textWidth)
 
-	// Build first line: gray background for total, green for withHash, text on top
-	line1 := strings.Builder{}
-	for i, r := range []rune(textLine) {
-		switch {
-		case i < withHashWidth:
-			// In green area (with hash) - apply green background
-			line1.WriteString(greenStyle.Render(string(r)))
-		case i < totalWidth:
-			// In gray area (all votes but nil hash) - apply gray background
-			line1.WriteString(grayStyle.Render(string(r)))
-		default:
-			// In empty area - just the character
-			line1.WriteRune(r)
-		}
-	}
+	// Build lines
+	line1 := buildProgressLine1(textLine, totalWidth, withHashWidth, grayStyle, greenStyle)
+	line2 := buildProgressLine2(width, totalWidth, withHashWidth, grayStyle, greenStyle)
 
-	// Build second line: gray background for total, green for withHash, no text
-	line2 := strings.Builder{}
-	for i := 0; i < width; i++ {
-		switch {
-		case i < withHashWidth:
-			// In green area (with hash) - green background
-			line2.WriteString(greenStyle.Render(" "))
-		case i < totalWidth:
-			// In gray area (all votes but nil hash) - gray background
-			line2.WriteString(grayStyle.Render(" "))
-		default:
-			// In empty area - just space
-			line2.WriteString(" ")
-		}
-	}
-
-	return []string{line1.String(), line2.String()}
+	return []string{line1, line2}
 }
 
 // renderHeader renders the top header section
@@ -460,163 +478,18 @@ func (m Model) renderValidators() string {
 		return ""
 	}
 
-	// Calculate available height (subtract header height)
-	availableHeight := m.height - uiHeaderHeight
-	if availableHeight <= 0 {
+	colWidth, rows, _, ok := m.calculateValidatorLayout()
+	if !ok {
 		return ""
-	}
-
-	// Display validators in columns (4 columns like in tmtop example)
-	cols := 4
-
-	// Calculate column width (accounting for borders: | col | col | col | col |)
-	// We need: left border (1) + 4 columns + 3 separators (3) + right border (1) = width
-	// So: 1 + colWidth*4 + 3 + 1 = width
-	// colWidth*4 + 5 = width
-	// colWidth = (width - 5) / 4
-	// But we need to account for the actual width of separator characters
-	separatorWidth := runewidth.StringWidth("│")
-	borderWidth := runewidth.StringWidth("│") * uiBorderCharWidth // left + right
-	totalSeparatorsWidth := separatorWidth * (cols - 1)           // separators between columns
-
-	colWidth := (m.width - borderWidth - totalSeparatorsWidth) / cols
-	if colWidth < uiMinColWidth {
-		colWidth = uiMinColWidth // Minimum column width to fit stats
-	}
-
-	// Calculate how many rows we can display
-	maxRows := availableHeight - uiBorderWidth // Subtract borders
-	if maxRows <= 0 {
-		return ""
-	}
-
-	// Calculate total rows needed
-	totalRows := (len(m.validators) + cols - 1) / cols // Ceiling division
-
-	// Limit rows to fit available height
-	rows := totalRows
-	if rows > maxRows {
-		rows = maxRows
 	}
 
 	var lines []string
 
-	formatRow := func(cells []string, proposerIndices []int) string {
-		// First, format cells to correct width
-		for i, cell := range cells {
-			// Use lipgloss.Width() to measure width (handles ANSI codes correctly)
-			cellWidth := lipgloss.Width(cell)
-			if cellWidth < colWidth {
-				cells[i] = cell + strings.Repeat(" ", colWidth-cellWidth)
-			} else if cellWidth > colWidth {
-				// Truncate if needed (shouldn't happen often)
-				var builder strings.Builder
-				widthSoFar := 0
-				// Iterate by runes to handle Unicode correctly
-				for _, r := range cell {
-					runeWidth := runewidth.RuneWidth(r)
-					if widthSoFar+runeWidth > colWidth {
-						break
-					}
-					builder.WriteRune(r)
-					widthSoFar += runeWidth
-				}
-				cells[i] = builder.String()
-			}
-		}
-
-		// Apply green background style to proposer cells
-		// This must be done after width formatting to ensure correct width
-		for _, idx := range proposerIndices {
-			if idx >= 0 && idx < len(cells) {
-				// Use Width() to ensure the styled cell has exact colWidth
-				cells[idx] = proposerStyle.Width(colWidth).Render(cells[idx])
-			}
-		}
-
-		line := "│" + strings.Join(cells, "│") + "│"
-
-		// Use lipgloss.Width() to correctly measure width with ANSI codes
-		lineWidth := lipgloss.Width(line)
-		if lineWidth < m.width {
-			// Need to add spaces before the last border
-			// Find the last border character position
-			lastBorderPos := strings.LastIndex(line, "│")
-			if lastBorderPos >= 0 {
-				spacesNeeded := m.width - lineWidth
-				line = line[:lastBorderPos] + strings.Repeat(" ", spacesNeeded) + line[lastBorderPos:]
-			}
-		}
-
-		return line
-	}
-
 	// Build rows
 	for row := 0; row < rows; row++ {
-		var rowCells []string
-		var proposerIndices []int // Track which cells are proposers
-		for col := 0; col < cols; col++ {
-			idx := row*cols + col
-			if idx < len(m.validators) {
-				val := m.validators[idx]
-				// Format moniker
-				moniker := val.Moniker
-				if moniker == "" {
-					// Use first N chars of address if no moniker
-					if len(val.Address) > addressDisplayLen {
-						moniker = val.Address[:addressDisplayLen] + "..."
-					} else {
-						moniker = val.Address
-					}
-				}
-
-				// Get vote status symbols
-				prevoteSymbol := getVoteSymbol(val.PreVote)
-				precommitSymbol := getVoteSymbol(val.PreCommit)
-
-				idStr := fmt.Sprintf("%3d", idx+1)
-				powerPercent := fmt.Sprintf("%6.2f%%", val.PowerPercent)
-				proposerRate := "P: --%"
-				if val.HasProposerStats {
-					proposerRate = fmt.Sprintf("P:%5.1f%%", val.ProposerSuccessRate)
-				}
-				voteRate := "V: --%"
-				if val.HasVoteStats {
-					voteRate = fmt.Sprintf("V:%5.1f%%", val.NonNilVoteRate)
-				}
-				prefix := fmt.Sprintf("%s %s %s %s %s %s ", idStr, powerPercent, prevoteSymbol, precommitSymbol, proposerRate, voteRate)
-				prefixWidth := runewidth.StringWidth(prefix)
-				availableForMoniker := colWidth - prefixWidth
-				if availableForMoniker < 1 {
-					availableForMoniker = 1
-				}
-
-				// Truncate moniker if too long (using display width, not rune count)
-				monikerWidth := runewidth.StringWidth(moniker)
-				if monikerWidth > availableForMoniker {
-					// Truncate by display width
-					var builder strings.Builder
-					for _, r := range moniker {
-						if runewidth.StringWidth(builder.String()+string(r)) > availableForMoniker-3 {
-							break
-						}
-						builder.WriteRune(r)
-					}
-					moniker = builder.String() + "..."
-				}
-
-				cell := prefix + moniker
-				if val.IsCurrentProposer {
-					proposerIndices = append(proposerIndices, len(rowCells))
-				}
-				rowCells = append(rowCells, cell)
-			} else {
-				// Empty cell - pad to exact width (just spaces)
-				rowCells = append(rowCells, strings.Repeat(" ", colWidth))
-			}
-		}
-
-		lines = append(lines, formatRow(rowCells, proposerIndices))
+		const validatorColumns = 4
+		rowCells, proposerIndices := m.buildValidatorRow(row, validatorColumns, colWidth)
+		lines = append(lines, formatValidatorRow(rowCells, proposerIndices, colWidth, m.width))
 	}
 
 	// Build borders
@@ -624,6 +497,177 @@ func (m Model) renderValidators() string {
 	bottomBorder := "└" + strings.Repeat("─", m.width-uiBorderWidth) + "┘"
 
 	return topBorder + "\n" + strings.Join(lines, "\n") + "\n" + separatorLine(m.width) + "\n" + formatInfoLine("ID, Voting Power, PreVote, PreCommit, Proposer %, Vote %, Moniker (green=current proposer)", m.width) + "\n" + bottomBorder
+}
+
+// buildValidatorRow builds a row of validator cells
+func (m Model) buildValidatorRow(row, cols, colWidth int) ([]string, []int) {
+	var rowCells []string
+	var proposerIndices []int // Track which cells are proposers
+	for col := 0; col < cols; col++ {
+		idx := row*cols + col
+		if idx < len(m.validators) {
+			val := m.validators[idx]
+			cell := m.formatValidatorCell(val, idx, colWidth)
+			if val.IsCurrentProposer {
+				proposerIndices = append(proposerIndices, len(rowCells))
+			}
+			rowCells = append(rowCells, cell)
+		} else {
+			// Empty cell - pad to exact width (just spaces)
+			rowCells = append(rowCells, strings.Repeat(" ", colWidth))
+		}
+	}
+	return rowCells, proposerIndices
+}
+
+// formatValidatorCell formats a single validator cell
+func (m Model) formatValidatorCell(val ValidatorInfo, idx, colWidth int) string {
+	// Format moniker
+	moniker := m.formatMoniker(val)
+
+	// Get vote status symbols
+	prevoteSymbol := getVoteSymbol(val.PreVote)
+	precommitSymbol := getVoteSymbol(val.PreCommit)
+
+	// Format stats
+	idStr := fmt.Sprintf("%3d", idx+1)
+	powerPercent := fmt.Sprintf("%6.2f%%", val.PowerPercent)
+	proposerRate := "P: --%"
+	if val.HasProposerStats {
+		proposerRate = fmt.Sprintf("P:%5.1f%%", val.ProposerSuccessRate)
+	}
+	voteRate := "V: --%"
+	if val.HasVoteStats {
+		voteRate = fmt.Sprintf("V:%5.1f%%", val.NonNilVoteRate)
+	}
+	prefix := fmt.Sprintf("%s %s %s %s %s %s ", idStr, powerPercent, prevoteSymbol, precommitSymbol, proposerRate, voteRate)
+	prefixWidth := runewidth.StringWidth(prefix)
+	availableForMoniker := colWidth - prefixWidth
+	if availableForMoniker < 1 {
+		availableForMoniker = 1
+	}
+
+	// Truncate moniker if too long
+	moniker = m.truncateMoniker(moniker, availableForMoniker)
+
+	return prefix + moniker
+}
+
+// formatMoniker formats moniker or uses address if moniker is empty
+func (m Model) formatMoniker(val ValidatorInfo) string {
+	if val.Moniker != "" {
+		return val.Moniker
+	}
+	// Use first N chars of address if no moniker
+	if len(val.Address) > addressDisplayLen {
+		return val.Address[:addressDisplayLen] + "..."
+	}
+	return val.Address
+}
+
+// truncateMoniker truncates moniker to fit available width
+func (m Model) truncateMoniker(moniker string, availableWidth int) string {
+	monikerWidth := runewidth.StringWidth(moniker)
+	if monikerWidth <= availableWidth {
+		return moniker
+	}
+	// Truncate by display width
+	var builder strings.Builder
+	for _, r := range moniker {
+		if runewidth.StringWidth(builder.String()+string(r)) > availableWidth-3 {
+			break
+		}
+		builder.WriteRune(r)
+	}
+	return builder.String() + "..."
+}
+
+// formatValidatorRow formats a row of validator cells
+func formatValidatorRow(cells []string, proposerIndices []int, colWidth, totalWidth int) string {
+	// First, format cells to correct width
+	for i, cell := range cells {
+		cellWidth := lipgloss.Width(cell)
+		if cellWidth < colWidth {
+			cells[i] = cell + strings.Repeat(" ", colWidth-cellWidth)
+		} else if cellWidth > colWidth {
+			cells[i] = truncateCell(cell, colWidth)
+		}
+	}
+
+	// Apply green background style to proposer cells
+	for _, idx := range proposerIndices {
+		if idx >= 0 && idx < len(cells) {
+			cells[idx] = proposerStyle.Width(colWidth).Render(cells[idx])
+		}
+	}
+
+	line := "│" + strings.Join(cells, "│") + "│"
+
+	// Adjust line width if needed
+	lineWidth := lipgloss.Width(line)
+	if lineWidth < totalWidth {
+		lastBorderPos := strings.LastIndex(line, "│")
+		if lastBorderPos >= 0 {
+			spacesNeeded := totalWidth - lineWidth
+			line = line[:lastBorderPos] + strings.Repeat(" ", spacesNeeded) + line[lastBorderPos:]
+		}
+	}
+
+	return line
+}
+
+// truncateCell truncates a cell to fit width
+func truncateCell(cell string, width int) string {
+	var builder strings.Builder
+	widthSoFar := 0
+	for _, r := range cell {
+		runeWidth := runewidth.RuneWidth(r)
+		if widthSoFar+runeWidth > width {
+			break
+		}
+		builder.WriteRune(r)
+		widthSoFar += runeWidth
+	}
+	return builder.String()
+}
+
+// calculateValidatorLayout calculates layout parameters for validator display
+func (m Model) calculateValidatorLayout() (colWidth, rows, maxRows int, ok bool) {
+	// Calculate available height (subtract header height)
+	availableHeight := m.height - uiHeaderHeight
+	if availableHeight <= 0 {
+		return 0, 0, 0, false
+	}
+
+	// Display validators in columns (4 columns like in tmtop example)
+	cols := 4
+
+	// Calculate column width
+	separatorWidth := runewidth.StringWidth("│")
+	borderWidth := runewidth.StringWidth("│") * uiBorderCharWidth // left + right
+	totalSeparatorsWidth := separatorWidth * (cols - 1)           // separators between columns
+
+	colWidth = (m.width - borderWidth - totalSeparatorsWidth) / cols
+	if colWidth < uiMinColWidth {
+		colWidth = uiMinColWidth // Minimum column width to fit stats
+	}
+
+	// Calculate how many rows we can display
+	maxRows = availableHeight - uiBorderWidth // Subtract borders
+	if maxRows <= 0 {
+		return 0, 0, 0, false
+	}
+
+	// Calculate total rows needed
+	totalRows := (len(m.validators) + cols - 1) / cols // Ceiling division
+
+	// Limit rows to fit available height
+	rows = totalRows
+	if rows > maxRows {
+		rows = maxRows
+	}
+
+	return colWidth, rows, maxRows, true
 }
 
 // getVoteSymbol returns the symbol for a vote status

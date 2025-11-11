@@ -1,5 +1,4 @@
 // Package db provides database connection and migration functionality.
-
 package db
 
 import (

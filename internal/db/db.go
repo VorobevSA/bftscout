@@ -1,13 +1,13 @@
 // Package db provides database connection and migration functionality.
+
 package db
 
 import (
+	"consensus-monitoring/internal/config"
+	"consensus-monitoring/internal/models"
 	"fmt"
 	stdlog "log"
 	"os"
-
-	"consensus-monitoring/internal/config"
-	"consensus-monitoring/internal/models"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"

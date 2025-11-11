@@ -1,7 +1,12 @@
 // Package main provides the entry point for the consensus monitoring application.
+
 package main
 
 import (
+	"consensus-monitoring/internal/collector"
+	"consensus-monitoring/internal/config"
+	"consensus-monitoring/internal/logger"
+	"consensus-monitoring/internal/tui"
 	"context"
 	"fmt"
 	"os"
@@ -9,11 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"consensus-monitoring/internal/collector"
-	"consensus-monitoring/internal/config"
 	dbpkg "consensus-monitoring/internal/db"
-	"consensus-monitoring/internal/logger"
-	"consensus-monitoring/internal/tui"
 
 	"github.com/joho/godotenv"
 )

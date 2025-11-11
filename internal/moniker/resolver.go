@@ -1,7 +1,9 @@
 // Package moniker provides functionality to resolve validator consensus addresses to monikers.
+
 package moniker
 
 import (
+	"consensus-monitoring/internal/logger"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -11,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"consensus-monitoring/internal/logger"
 )
 
 const (

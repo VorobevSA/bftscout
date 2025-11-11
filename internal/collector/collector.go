@@ -1,8 +1,14 @@
 // Package collector provides functionality for collecting consensus events from CometBFT RPC
 // and storing them in a database, as well as updating the TUI with real-time information.
+
 package collector
 
 import (
+	"consensus-monitoring/internal/config"
+	"consensus-monitoring/internal/logger"
+	"consensus-monitoring/internal/models"
+	"consensus-monitoring/internal/moniker"
+	"consensus-monitoring/internal/tui"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,12 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"consensus-monitoring/internal/config"
-	"consensus-monitoring/internal/logger"
-	"consensus-monitoring/internal/models"
-	"consensus-monitoring/internal/moniker"
-	"consensus-monitoring/internal/tui"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	rpccoretypes "github.com/cometbft/cometbft/rpc/core/types"

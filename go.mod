@@ -11,7 +11,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/mattn/go-runewidth v0.0.19
 	gorm.io/driver/postgres v1.6.0
-	gorm.io/gorm v1.25.11
+	gorm.io/gorm v1.31.1
 )
 
 require (

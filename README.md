@@ -1,4 +1,4 @@
-## Consensus Monitoring (CometBFT)
+## BFTScout -  Consensus Monitoring
 
 A simple Go utility that subscribes to CometBFT consensus events and stores information about blocks and proposers per round in a database (GORM).
 
@@ -55,7 +55,7 @@ Monikers are resolved for all statuses (bonded, unbonding, unbonded) to maximize
 
 #### Using Make
 ```bash
-make build    # Build binary to bin/consmon
+make build    # Build binary to bin/bftscout
 make run      # Run with environment variables (from .env if present)
 make clean    # Remove build artifacts
 ```
@@ -63,10 +63,10 @@ make clean    # Remove build artifacts
 #### Manual
 ```bash
 # Build
-go build -o bin/consmon ./cmd/monitor
+go build -o bin/bftscout ./cmd/monitor
 
 # Run
-./bin/consmon
+./bin/bftscout
 ```
 
 ### Database Schema

@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-BIN ?= bin/consensus-monitoring
+BIN ?= bin/bftscout
 PKG ?= ./cmd/monitor
 
 .PHONY: help tidy deps build clean run

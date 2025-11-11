@@ -26,6 +26,7 @@ go run ./cmd/monitor
 Environment variables:
 - `RPC_URL` - CometBFT RPC endpoint (default: `http://localhost:26657`)
 - `WS_PATH` - WebSocket path (default: `/websocket`)
+- `APP_API_URL` - Cosmos SDK REST API base URL for moniker resolution (optional, default port: 1317; can point to the validator host if the port is exposed)
 - `DATABASE_URL` - PostgreSQL connection URL (optional; if omitted, data is not persisted)
 - `APP_API_URL` - Cosmos SDK REST API base URL for moniker resolution (optional, default port: 1317)
 
@@ -67,6 +68,22 @@ go build -o bin/bftscout ./cmd/monitor
 
 # Run
 ./bin/bftscout
+```
+
+#### Docker
+```bash
+# Build the container image locally
+docker build -t bftscout:0.0.1 .
+
+# Run the container with TUI attached to the current terminal
+docker run --rm -it \
+  --name bftscout \
+  -e TERM="${TERM:-xterm-256color}" \
+  -e RPC_URL="http://validator.bft:26657" \
+  -e WS_PATH="/websocket" \
+  -e APP_API_URL="http://node.bft:1317" \
+  bftscout:0.0.1
+
 ```
 
 ### Database Schema

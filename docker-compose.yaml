@@ -8,14 +8,13 @@ services:
       WS_PATH: ${WS_PATH:-/websocket}
       APP_API_URL: ${APP_API_URL:-http://localhost:1317}
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-consensus}?sslmode=disable
+      DEBUG: ${DEBUG:-true}
     networks:
       - bftscout-network
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
-    stdin_open: true
-    tty: true
 
   postgres:
     container_name: bftscout-postgres
@@ -32,10 +31,11 @@ services:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-consensus}"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
       retries: 5
       start_period: 10s
+    restart: unless-stopped
     networks:
       - bftscout-network
 

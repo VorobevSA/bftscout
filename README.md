@@ -1,4 +1,4 @@
-## Consensus Monitoring (CometBFT)
+## BFTScout -  Consensus Monitoring
 
 A simple Go utility that subscribes to CometBFT consensus events and stores information about blocks and proposers per round in a database (GORM).
 
@@ -26,8 +26,8 @@ go run ./cmd/monitor
 Environment variables:
 - `RPC_URL` - CometBFT RPC endpoint (default: `http://localhost:26657`)
 - `WS_PATH` - WebSocket path (default: `/websocket`)
+- `APP_API_URL` - Cosmos SDK REST API base URL for moniker resolution (optional, default port: 1317; can point to the validator host if the port is exposed)
 - `DATABASE_URL` - PostgreSQL connection URL (optional; if omitted, data is not persisted)
-- `APP_API_URL` - Cosmos SDK REST API base URL for moniker resolution (optional, default port: 1317)
 
 If `DATABASE_URL` is not provided, the application still runs fully (including TUI updates and logging) but skips all persistence.
 
@@ -55,7 +55,7 @@ Monikers are resolved for all statuses (bonded, unbonding, unbonded) to maximize
 
 #### Using Make
 ```bash
-make build    # Build binary to bin/consmon
+make build    # Build binary to bin/bftscout
 make run      # Run with environment variables (from .env if present)
 make clean    # Remove build artifacts
 ```
@@ -63,10 +63,26 @@ make clean    # Remove build artifacts
 #### Manual
 ```bash
 # Build
-go build -o bin/consmon ./cmd/monitor
+go build -o bin/bftscout ./cmd/monitor
 
 # Run
-./bin/consmon
+./bin/bftscout
+```
+
+#### Docker
+```bash
+# Build the container image locally
+docker build -t bftscout:0.0.1 .
+
+# Run the container with TUI attached to the current terminal
+docker run --rm -it \
+  --name bftscout \
+  -e TERM="${TERM:-xterm-256color}" \
+  -e RPC_URL="http://validator.bft:26657" \
+  -e WS_PATH="/websocket" \
+  -e APP_API_URL="http://node.bft:1317" \
+  bftscout:0.0.1
+
 ```
 
 ### Database Schema

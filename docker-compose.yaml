@@ -1,0 +1,47 @@
+services:
+  monitor:
+    container_name: bftscout
+    build: .
+    image: bftscout:0.0.1
+    environment:
+      RPC_URL: ${RPC_URL:-http://localhost:26657}
+      WS_PATH: ${WS_PATH:-/websocket}
+      APP_API_URL: ${APP_API_URL:-http://localhost:1317}
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-consensus}?sslmode=disable
+      DEBUG: ${DEBUG:-true}
+    networks:
+      - bftscout-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    container_name: bftscout-postgres
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-consensus}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # WARNING: Change POSTGRES_PASSWORD in production!
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    # Expose externally only if needed; change POSTGRES_PASSWORD first.
+    # ports:
+    #   - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-consensus}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - bftscout-network
+
+volumes:
+  postgres-data:
+
+networks:
+  bftscout-network:
+

@@ -1,7 +1,9 @@
+// Package models defines the database models for consensus monitoring.
 package models
 
 import "time"
 
+// RoundProposer represents a proposer for a specific round at a given height.
 type RoundProposer struct {
 	ID              uint   `gorm:"primaryKey"`
 	Height          int64  `gorm:"index:ux_height_round,unique;index"`

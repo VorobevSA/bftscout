@@ -1,3 +1,4 @@
+// Package tui provides the terminal user interface for the consensus monitoring application.
 package tui
 
 import (
@@ -106,9 +107,12 @@ type BlockInfo struct {
 type VoteStatus int
 
 const (
-	VoteStatusNone  VoteStatus = iota // No vote
-	VoteStatusNil                     // Vote with nil/zero blockhash
-	VoteStatusValid                   // Vote with non-zero blockhash
+	// VoteStatusNone represents no vote.
+	VoteStatusNone VoteStatus = iota
+	// VoteStatusNil represents a vote with nil/zero blockhash.
+	VoteStatusNil
+	// VoteStatusValid represents a vote with non-zero blockhash.
+	VoteStatusValid
 )
 
 // ValidatorInfo represents a validator
@@ -296,13 +300,14 @@ func renderProgressBar(label string, totalPercent, withHashPercent float64, widt
 	// Build first line: gray background for total, green for withHash, text on top
 	line1 := strings.Builder{}
 	for i, r := range []rune(textLine) {
-		if i < withHashWidth {
+		switch {
+		case i < withHashWidth:
 			// In green area (with hash) - apply green background
 			line1.WriteString(greenStyle.Render(string(r)))
-		} else if i < totalWidth {
+		case i < totalWidth:
 			// In gray area (all votes but nil hash) - apply gray background
 			line1.WriteString(grayStyle.Render(string(r)))
-		} else {
+		default:
 			// In empty area - just the character
 			line1.WriteRune(r)
 		}
@@ -311,13 +316,14 @@ func renderProgressBar(label string, totalPercent, withHashPercent float64, widt
 	// Build second line: gray background for total, green for withHash, no text
 	line2 := strings.Builder{}
 	for i := 0; i < width; i++ {
-		if i < withHashWidth {
+		switch {
+		case i < withHashWidth:
 			// In green area (with hash) - green background
 			line2.WriteString(greenStyle.Render(" "))
-		} else if i < totalWidth {
+		case i < totalWidth:
 			// In gray area (all votes but nil hash) - gray background
 			line2.WriteString(grayStyle.Render(" "))
-		} else {
+		default:
 			// In empty area - just space
 			line2.WriteString(" ")
 		}

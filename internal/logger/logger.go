@@ -1,3 +1,4 @@
+// Package logger provides a simple logger wrapper with debug flag support.
 package logger
 
 import (

@@ -1,3 +1,4 @@
+// Package config provides configuration loading and management for the consensus monitoring application.
 package config
 
 import (
@@ -12,6 +13,7 @@ const (
 	DatabaseSchemePostgres = "postgres"
 )
 
+// Config holds the application configuration loaded from environment variables.
 type Config struct {
 	RPCURL    string
 	WSPath    string
@@ -54,6 +56,7 @@ func parseDatabaseURL(databaseURL string) (string, string, error) {
 	}
 }
 
+// Load loads configuration from environment variables.
 func Load() Config {
 	cfg := Config{
 		RPCURL:    getenv("RPC_URL", "http://localhost:26657"),
@@ -74,6 +77,7 @@ func Load() Config {
 	return cfg
 }
 
+// WSURL returns the WebSocket URL path for the CometBFT client.
 func (c Config) WSURL() string {
 	// cometbft http client expects a separate ws endpoint path
 	return c.WSPath

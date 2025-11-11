@@ -1,3 +1,4 @@
+// Package moniker provides functionality to resolve validator consensus addresses to monikers.
 package moniker
 
 import (
@@ -41,6 +42,7 @@ type Resolver struct {
 	client    *http.Client
 }
 
+// NewResolver creates a new Resolver instance with the given RPC and REST API URLs.
 func NewResolver(rpcURL, appURL string, log *logger.Logger) *Resolver {
 	if rpcURL == "" || appURL == "" {
 		return nil
@@ -55,6 +57,7 @@ func NewResolver(rpcURL, appURL string, log *logger.Logger) *Resolver {
 	}
 }
 
+// Resolve resolves a consensus address (hex) to a validator moniker.
 func (r *Resolver) Resolve(consAddrHex string) string {
 	if r == nil || consAddrHex == "" {
 		return ""
@@ -101,13 +104,7 @@ func (r *Resolver) refresh() {
 	}
 
 	// Fetch validators from REST API
-	restVals, err := r.fetchRESTValidators()
-	if err != nil {
-		if r.log != nil {
-			r.log.Printf("moniker resolver: failed to fetch REST validators: %v", err)
-		}
-		return
-	}
+	restVals := r.fetchRESTValidators()
 	if r.log != nil {
 		r.log.Printf("moniker resolver: fetched %d validators from REST API", len(restVals))
 	}
@@ -270,7 +267,7 @@ func (r *Resolver) fetchRPCValidators() ([]rpcValidator, error) {
 	return payload.Result.Validators, nil
 }
 
-func (r *Resolver) fetchRESTValidators() ([]restValidator, error) {
+func (r *Resolver) fetchRESTValidators() []restValidator {
 	// Request validators from all statuses (bonded, unbonding, unbonded) to get complete list
 	// Use status filter to get all validators, not just active ones
 	urls := []string{
@@ -316,7 +313,7 @@ func (r *Resolver) fetchRESTValidators() ([]restValidator, error) {
 	for _, v := range allValidators {
 		result = append(result, v)
 	}
-	return result, nil
+	return result
 }
 
 // matchPubKey compares pub_key from RPC (base64) with pub_key from REST (base64)

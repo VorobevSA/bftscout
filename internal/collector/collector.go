@@ -1,3 +1,5 @@
+// Package collector provides functionality for collecting consensus events from CometBFT RPC
+// and storing them in a database, as well as updating the TUI with real-time information.
 package collector
 
 import (
@@ -44,10 +46,11 @@ const (
 	watchdogInterval         = 30 * time.Second
 	resolveProposerTimeout   = 2 * time.Second
 
-	// Buffer and batch sizes
+	// TUIChannelBufferSize is the buffer size for the TUI update channel.
 	TUIChannelBufferSize = 100
-	TUICloseDelay        = 200 * time.Millisecond
-	votesBatchSize       = 1000
+	// TUICloseDelay is the delay to wait for TUI to process close signal.
+	TUICloseDelay  = 200 * time.Millisecond
+	votesBatchSize = 1000
 
 	// History and cache sizes
 	maxBlockHistorySize = 20
@@ -55,19 +58,9 @@ const (
 	// HTTP client timeouts
 	httpClientTimeout     = 5 * time.Second
 	resolverClientTimeout = 10 * time.Second
-
-	// UI layout constants
-	minUIWidth        = 2
-	hashDisplayLen    = 16
-	maxPercentValue   = 100
-	uiBorderWidth     = 2
-	uiColumnCount     = 3
-	uiColumnSpacing   = 4
-	uiMinColWidth     = 24
-	uiHeaderHeight    = 6
-	uiBorderCharWidth = 2
 )
 
+// Collector collects consensus events from CometBFT RPC and stores them in a database.
 type Collector struct {
 	cfg             config.Config
 	db              *gorm.DB
@@ -317,6 +310,7 @@ func (c *Collector) getCurrentProposer() string {
 	return c.lastBlockInfo.Proposer
 }
 
+// NewCollector creates a new Collector instance with the given configuration.
 func NewCollector(cfg config.Config, db *gorm.DB, tuiUpdateCh chan<- interface{}, log *logger.Logger) (*Collector, error) {
 	// rpchttp.New takes RPC base URL and WS path separately
 	c, err := rpchttp.New(cfg.RPCURL, cfg.WSURL())
@@ -414,6 +408,7 @@ func (c *Collector) ensureChainInfo(ctx context.Context) error {
 	return nil
 }
 
+// Run starts the collector and begins processing consensus events.
 func (c *Collector) Run(ctx context.Context) error {
 	c.startChainInfoLoop(ctx)
 
@@ -770,6 +765,7 @@ func (c *Collector) shouldReconnect() bool {
 
 /*{"jsonrpc":"2.0","method":"subscribe","id":1,"params":{"query":"tm.event='Vote'"}}*/
 
+// Close stops the collector and closes all connections.
 func (c *Collector) Close() error {
 	if c.client != nil {
 		// Stop the client (this will close connections and stop goroutines)
@@ -1034,7 +1030,7 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 }
 
 // tryResolveProposerAddress best-effort fetch of proposer address for a given round
-func (c *Collector) tryResolveProposerAddress(ctx context.Context, round int32) string {
+func (c *Collector) tryResolveProposerAddress(ctx context.Context, _ int32) string {
 	// short timeout to avoid blocking event loop
 	tctx, cancel := context.WithTimeout(ctx, resolveProposerTimeout)
 	defer cancel()

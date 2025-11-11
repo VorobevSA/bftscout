@@ -1,7 +1,9 @@
+// Package models defines the database models for consensus monitoring.
 package models
 
 import "time"
 
+// Block represents a blockchain block in the database.
 type Block struct {
 	ID              uint      `gorm:"primaryKey"`
 	Height          int64     `gorm:"uniqueIndex;not null;index"`

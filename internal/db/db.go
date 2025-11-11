@@ -1,3 +1,4 @@
+// Package db provides database connection and migration functionality.
 package db
 
 import (
@@ -13,6 +14,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// Open opens a database connection using the provided configuration.
 func Open(cfg config.Config) (*gorm.DB, error) {
 	// Configure GORM logger (Silent to avoid cluttering output; only errors will be logged)
 	newLogger := logger.New(
@@ -37,6 +39,7 @@ func Open(cfg config.Config) (*gorm.DB, error) {
 	}
 }
 
+// AutoMigrate runs database migrations for all models.
 func AutoMigrate(db *gorm.DB) error {
 	if db == nil {
 		return nil

@@ -12,9 +12,8 @@ type RoundVote struct {
 	ValidatorMoniker string    `gorm:"size:128"`
 	ProposerAddress  string    `gorm:"size:128;index"`
 	VoteType         string    `gorm:"size:16;index"` // "prevote" or "precommit"
-	BlockHash        string    `gorm:"size:128"` // can be empty for failed rounds
+	BlockHash        string    `gorm:"size:128"`      // can be empty for failed rounds
 	Timestamp        time.Time `gorm:"index"`
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
-

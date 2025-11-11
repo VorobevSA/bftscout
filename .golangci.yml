@@ -58,13 +58,6 @@ linters:
         - name: package-comments
         - name: range
         - name: time-naming
-  exclusions:
-    generated: lax
-    presets:
-      - comments
-      - common-false-positives
-      - legacy
-      - std-error-handling
     paths:
       - third_party$
       - builtin$

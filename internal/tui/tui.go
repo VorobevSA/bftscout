@@ -10,6 +10,22 @@ import (
 	"github.com/mattn/go-runewidth"
 )
 
+const (
+	// UI layout constants
+	minUIWidth        = 2
+	hashDisplayLen    = 16
+	maxPercentValue   = 100
+	percentMultiplier = 100.0
+	uiBorderWidth     = 2
+	uiColumnCount     = 3
+	uiColumnSpacing   = 4
+	uiMinColWidth     = 24
+	uiHeaderHeight    = 6
+	uiBorderCharWidth = 2
+	addressDisplayLen = 8
+	divisorTwo        = 2
+)
+
 var proposerStyle = lipgloss.NewStyle().Background(lipgloss.Color("2")) // Green background
 
 func padToWidth(s string, width int) string {
@@ -54,17 +70,17 @@ func truncateToWidth(s string, width int) string {
 }
 
 func separatorLine(width int) string {
-	if width < 2 {
+	if width < minUIWidth {
 		return strings.Repeat("─", width)
 	}
-	return "├" + strings.Repeat("─", width-2) + "┤"
+	return "├" + strings.Repeat("─", width-uiBorderWidth) + "┤"
 }
 
 func formatInfoLine(text string, width int) string {
-	if width < 2 {
+	if width < minUIWidth {
 		return padToWidth(text, width)
 	}
-	return "│" + padToWidth(text, width-2) + "│"
+	return "│" + padToWidth(text, width-uiBorderWidth) + "│"
 }
 
 // BlockInfo represents current block information
@@ -189,14 +205,14 @@ func (m Model) View() string {
 
 	// Format hash (truncate if too long)
 	hashStr := m.currentBlock.Hash
-	if len(hashStr) > 16 {
-		hashStr = hashStr[:16] + "..."
+	if len(hashStr) > hashDisplayLen {
+		hashStr = hashStr[:hashDisplayLen] + "..."
 	}
 
 	// Format proposer (truncate if too long)
 	proposerStr := m.currentBlock.Proposer
-	if len(proposerStr) > 16 {
-		proposerStr = proposerStr[:16] + "..."
+	if len(proposerStr) > hashDisplayLen {
+		proposerStr = proposerStr[:hashDisplayLen] + "..."
 	}
 
 	// Format average block time
@@ -236,25 +252,25 @@ func renderProgressBar(label string, totalPercent, withHashPercent float64, widt
 	if totalPercent < 0 {
 		totalPercent = 0
 	}
-	if totalPercent > 100 {
-		totalPercent = 100
+	if totalPercent > maxPercentValue {
+		totalPercent = maxPercentValue
 	}
 	if withHashPercent < 0 {
 		withHashPercent = 0
 	}
-	if withHashPercent > 100 {
-		withHashPercent = 100
+	if withHashPercent > maxPercentValue {
+		withHashPercent = maxPercentValue
 	}
 	if withHashPercent > totalPercent {
 		withHashPercent = totalPercent
 	}
 
 	// Calculate filled widths
-	totalWidth := int(float64(width) * totalPercent / 100.0)
+	totalWidth := int(float64(width) * totalPercent / percentMultiplier)
 	if totalWidth > width {
 		totalWidth = width
 	}
-	withHashWidth := int(float64(width) * withHashPercent / 100.0)
+	withHashWidth := int(float64(width) * withHashPercent / percentMultiplier)
 	if withHashWidth > width {
 		withHashWidth = width
 	}
@@ -273,7 +289,7 @@ func renderProgressBar(label string, totalPercent, withHashPercent float64, widt
 	// Build text line centered (only for first line)
 	spacesBefore := 0
 	if textWidth < width {
-		spacesBefore = (width - textWidth) / 2
+		spacesBefore = (width - textWidth) / divisorTwo
 	}
 	textLine := strings.Repeat(" ", spacesBefore) + percentText + strings.Repeat(" ", width-spacesBefore-textWidth)
 
@@ -313,11 +329,11 @@ func renderProgressBar(label string, totalPercent, withHashPercent float64, widt
 // renderHeader renders the top header section
 func (m Model) renderHeader(blockTimeStr, avgBlockTimeStr, hashStr, proposerStr, moniker string, consensusHeight int64, round int32, chainID, cometbft string, prevoteTotal, prevoteWithHash, precommitTotal, precommitWithHash float64) string {
 	// Calculate column widths (approximately 1/3 each, accounting for borders)
-	colWidth := (m.width - 4) / 3
-	rightColWidth := m.width - colWidth*2 - 4
+	colWidth := (m.width - uiColumnSpacing) / uiColumnCount
+	rightColWidth := m.width - colWidth*(uiColumnCount-1) - uiColumnSpacing
 
 	// Progress bar width (use most of the right column width)
-	progressBarWidth := rightColWidth - 2
+	progressBarWidth := rightColWidth - uiBorderWidth
 
 	// Left column: Block info
 	leftLines := []string{
@@ -379,15 +395,15 @@ func (m Model) renderHeader(blockTimeStr, avgBlockTimeStr, hashStr, proposerStr,
 		}
 
 		// Truncate if too long
-		leftWidth := colWidth - 2
+		leftWidth := colWidth - uiBorderWidth
 		if leftWidth < 0 {
 			leftWidth = 0
 		}
-		middleWidth := colWidth - 2
+		middleWidth := colWidth - uiBorderWidth
 		if middleWidth < 0 {
 			middleWidth = 0
 		}
-		rightWidth := rightColWidth - 2
+		rightWidth := rightColWidth - uiBorderWidth
 		if rightWidth < 0 {
 			rightWidth = 0
 		}
@@ -438,8 +454,8 @@ func (m Model) renderValidators() string {
 		return ""
 	}
 
-	// Calculate available height (subtract header height ~6 lines)
-	availableHeight := m.height - 6
+	// Calculate available height (subtract header height)
+	availableHeight := m.height - uiHeaderHeight
 	if availableHeight <= 0 {
 		return ""
 	}
@@ -454,16 +470,16 @@ func (m Model) renderValidators() string {
 	// colWidth = (width - 5) / 4
 	// But we need to account for the actual width of separator characters
 	separatorWidth := runewidth.StringWidth("│")
-	borderWidth := runewidth.StringWidth("│") * 2       // left + right
-	totalSeparatorsWidth := separatorWidth * (cols - 1) // separators between columns
+	borderWidth := runewidth.StringWidth("│") * uiBorderCharWidth // left + right
+	totalSeparatorsWidth := separatorWidth * (cols - 1)           // separators between columns
 
 	colWidth := (m.width - borderWidth - totalSeparatorsWidth) / cols
-	if colWidth < 24 {
-		colWidth = 24 // Minimum column width to fit stats
+	if colWidth < uiMinColWidth {
+		colWidth = uiMinColWidth // Minimum column width to fit stats
 	}
 
 	// Calculate how many rows we can display
-	maxRows := availableHeight - 2 // Subtract borders
+	maxRows := availableHeight - uiBorderWidth // Subtract borders
 	if maxRows <= 0 {
 		return ""
 	}
@@ -540,9 +556,9 @@ func (m Model) renderValidators() string {
 				// Format moniker
 				moniker := val.Moniker
 				if moniker == "" {
-					// Use first 8 chars of address if no moniker
-					if len(val.Address) > 8 {
-						moniker = val.Address[:8] + "..."
+					// Use first N chars of address if no moniker
+					if len(val.Address) > addressDisplayLen {
+						moniker = val.Address[:addressDisplayLen] + "..."
 					} else {
 						moniker = val.Address
 					}
@@ -598,8 +614,8 @@ func (m Model) renderValidators() string {
 	}
 
 	// Build borders
-	topBorder := "├" + strings.Repeat("─", m.width-2) + "┤"
-	bottomBorder := "└" + strings.Repeat("─", m.width-2) + "┘"
+	topBorder := "├" + strings.Repeat("─", m.width-uiBorderWidth) + "┤"
+	bottomBorder := "└" + strings.Repeat("─", m.width-uiBorderWidth) + "┘"
 
 	return topBorder + "\n" + strings.Join(lines, "\n") + "\n" + separatorLine(m.width) + "\n" + formatInfoLine("ID, Voting Power, PreVote, PreCommit, Proposer %, Vote %, Moniker (green=current proposer)", m.width) + "\n" + bottomBorder
 }

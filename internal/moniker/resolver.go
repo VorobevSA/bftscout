@@ -14,6 +14,13 @@ import (
 	"consensus-monitoring/internal/logger"
 )
 
+const (
+	// Cache and timeout constants
+	validatorCacheTTL     = 30 * time.Minute // Validators change rarely
+	resolverClientTimeout = 10 * time.Second
+	percentMultiplier     = 100.0
+)
+
 // validatorCacheEntry stores validator information in cache
 type validatorCacheEntry struct {
 	Moniker     string
@@ -43,8 +50,8 @@ func NewResolver(rpcURL, appURL string, log *logger.Logger) *Resolver {
 		appURL: strings.TrimSuffix(appURL, "/"),
 		log:    log,
 		cache:  map[string]validatorCacheEntry{},
-		ttl:    30 * time.Minute, // Validators change rarely
-		client: &http.Client{Timeout: 10 * time.Second},
+		ttl:    validatorCacheTTL,
+		client: &http.Client{Timeout: resolverClientTimeout},
 	}
 }
 
@@ -193,7 +200,7 @@ func (r *Resolver) GetValidators() []ValidatorInfo {
 	for addr, entry := range r.cache {
 		powerPercent := float64(0)
 		if totalPower > 0 {
-			powerPercent = float64(entry.VotingPower) / float64(totalPower) * 100.0
+			powerPercent = float64(entry.VotingPower) / float64(totalPower) * percentMultiplier
 		}
 		validators = append(validators, ValidatorInfo{
 			Address:      addr,
@@ -254,7 +261,7 @@ func (r *Resolver) fetchRPCValidators() ([]rpcValidator, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var payload rpcValidatorsResp
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -284,10 +291,10 @@ func (r *Resolver) fetchRESTValidators() ([]restValidator, error) {
 
 		var payload restValidatorsResp
 		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		for _, v := range payload.Validators {
 			if v.ConsensusPubkey.Key != "" {

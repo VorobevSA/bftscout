@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"consensus-monitoring/internal/config"
@@ -12,14 +15,57 @@ import (
 	"consensus-monitoring/internal/models"
 	"consensus-monitoring/internal/moniker"
 	"consensus-monitoring/internal/tui"
-	"strconv"
-	"strings"
-	"sync"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	rpccoretypes "github.com/cometbft/cometbft/rpc/core/types"
 	cmttypes "github.com/cometbft/cometbft/types"
 	"gorm.io/gorm"
+)
+
+const (
+	// Vote state constants
+	voteStateNone      = 0 // No vote
+	voteStateNilHash   = 1 // Vote with nil hash
+	voteStateValidHash = 2 // Vote with valid hash
+
+	// Vote type constants
+	voteTypePrevote   = 1 // Prevote type
+	voteTypePrecommit = 2 // Precommit type
+
+	// Percentage calculation
+	percentMultiplier = 100.0
+
+	// Timeouts and intervals
+	reconnectDelay           = 3 * time.Second
+	unsubscribeTimeout       = 2 * time.Second
+	cleanupDelay             = 500 * time.Millisecond
+	chainInfoInterval        = 5 * time.Minute
+	validatorsUpdateInterval = 30 * time.Second
+	watchdogInterval         = 30 * time.Second
+	resolveProposerTimeout   = 2 * time.Second
+
+	// Buffer and batch sizes
+	TUIChannelBufferSize = 100
+	TUICloseDelay        = 200 * time.Millisecond
+	votesBatchSize       = 1000
+
+	// History and cache sizes
+	maxBlockHistorySize = 20
+
+	// HTTP client timeouts
+	httpClientTimeout     = 5 * time.Second
+	resolverClientTimeout = 10 * time.Second
+
+	// UI layout constants
+	minUIWidth        = 2
+	hashDisplayLen    = 16
+	maxPercentValue   = 100
+	uiBorderWidth     = 2
+	uiColumnCount     = 3
+	uiColumnSpacing   = 4
+	uiMinColWidth     = 24
+	uiHeaderHeight    = 6
+	uiBorderCharWidth = 2
 )
 
 type Collector struct {
@@ -129,25 +175,25 @@ func (c *Collector) calculateVotePercentages() (float64, float64, float64, float
 	precommitWithHash := 0 // Precommits with non-nil hash
 
 	for _, state := range c.currentVoteStates {
-		if state.PreVote > 0 { // Any prevote (1 = nil, 2 = valid hash)
+		if state.PreVote > voteStateNone { // Any prevote (1 = nil, 2 = valid hash)
 			prevoteTotal++
-			if state.PreVote == 2 { // valid hash
+			if state.PreVote == voteStateValidHash { // valid hash
 				prevoteWithHash++
 			}
 		}
-		if state.PreCommit > 0 { // Any precommit (1 = nil, 2 = valid hash)
+		if state.PreCommit > voteStateNone { // Any precommit (1 = nil, 2 = valid hash)
 			precommitTotal++
-			if state.PreCommit == 2 { // valid hash
+			if state.PreCommit == voteStateValidHash { // valid hash
 				precommitWithHash++
 			}
 		}
 	}
 
 	// Calculate percentages based on total validators
-	prevoteTotalPercent := float64(prevoteTotal) / float64(totalValidators) * 100.0
-	prevoteWithHashPercent := float64(prevoteWithHash) / float64(totalValidators) * 100.0
-	precommitTotalPercent := float64(precommitTotal) / float64(totalValidators) * 100.0
-	precommitWithHashPercent := float64(precommitWithHash) / float64(totalValidators) * 100.0
+	prevoteTotalPercent := float64(prevoteTotal) / float64(totalValidators) * percentMultiplier
+	prevoteWithHashPercent := float64(prevoteWithHash) / float64(totalValidators) * percentMultiplier
+	precommitTotalPercent := float64(precommitTotal) / float64(totalValidators) * percentMultiplier
+	precommitWithHashPercent := float64(precommitWithHash) / float64(totalValidators) * percentMultiplier
 
 	return prevoteTotalPercent, prevoteWithHashPercent, precommitTotalPercent, precommitWithHashPercent
 }
@@ -287,8 +333,8 @@ func NewCollector(cfg config.Config, db *gorm.DB, tuiUpdateCh chan<- interface{}
 		currentVoteStates: make(map[string]validatorVoteState),
 		tuiUpdateCh:       tuiUpdateCh,
 		blockTimeHistory:  make([]time.Duration, 0),
-		maxHistorySize:    20, // Keep last 20 blocks for average calculation
-		httpClient:        &http.Client{Timeout: 5 * time.Second},
+		maxHistorySize:    maxBlockHistorySize, // Keep last N blocks for average calculation
+		httpClient:        &http.Client{Timeout: httpClientTimeout},
 		proposerStats:     make(map[string]localProposerStats),
 		voteStats:         make(map[string]localVoteStats),
 	}
@@ -298,7 +344,7 @@ func NewCollector(cfg config.Config, db *gorm.DB, tuiUpdateCh chan<- interface{}
 
 func (c *Collector) startChainInfoLoop(ctx context.Context) {
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(chainInfoInterval)
 		defer ticker.Stop()
 
 		_ = c.ensureChainInfo(ctx)
@@ -335,7 +381,7 @@ func (c *Collector) ensureChainInfo(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("status http %d", resp.StatusCode)
 	}
@@ -377,7 +423,7 @@ func (c *Collector) Run(ctx context.Context) error {
 		}
 		if err := c.runLoop(ctx); err != nil {
 			if ctx.Err() != nil {
-				return nil // Context cancelled, normal shutdown
+				return nil // Context canceled, normal shutdown
 			}
 			// Only log actual errors, not planned reconnects
 			if !strings.Contains(err.Error(), "reconnect:") {
@@ -388,14 +434,12 @@ func (c *Collector) Run(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-time.After(3 * time.Second):
+			case <-time.After(reconnectDelay):
 				// Continue to reconnect
 			}
-		} else {
-			// runLoop returned nil, check if context was cancelled
-			if ctx.Err() != nil {
-				return nil
-			}
+		} else if ctx.Err() != nil {
+			// runLoop returned nil, check if context was canceled
+			return nil
 		}
 	}
 }
@@ -426,7 +470,7 @@ func (c *Collector) runLoop(ctx context.Context) error {
 	c.updateLastBlockTime()
 
 	// Start event handlers in separate goroutines
-	// These will be stopped when loopCtx is cancelled on reconnect
+	// These will be stopped when loopCtx is canceled on reconnect
 	c.startEventHandlers(loopCtx, subscriptions)
 
 	// Start validators update goroutine for TUI
@@ -442,14 +486,14 @@ func (c *Collector) cleanupClient(ctx context.Context) error {
 		return nil
 	}
 
-	unsubCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	unsubCtx, cancel := context.WithTimeout(ctx, unsubscribeTimeout)
 	defer cancel()
 
 	_ = c.client.UnsubscribeAll(unsubCtx, "consmon")
-	c.client.Stop()
+	_ = c.client.Stop()
 	c.client = nil
 
-	time.Sleep(500 * time.Millisecond) // Brief pause for cleanup
+	time.Sleep(cleanupDelay) // Brief pause for cleanup
 	return nil
 }
 
@@ -599,8 +643,8 @@ func (c *Collector) startValidatorsUpdater(ctx context.Context) {
 		// Send initial validators list
 		c.sendValidatorsToTUI()
 
-		// Update every 30 seconds (same as validator cache TTL)
-		ticker := time.NewTicker(30 * time.Second)
+		// Update every N seconds (same as validator cache TTL)
+		ticker := time.NewTicker(validatorsUpdateInterval)
 		defer ticker.Stop()
 
 		for {
@@ -699,7 +743,7 @@ func (c *Collector) sendVoteStatesUpdate() {
 
 // watchdogLoop runs the main loop checking for missing blocks
 func (c *Collector) watchdogLoop(ctx context.Context) error {
-	watchdog := time.NewTicker(30 * time.Second)
+	watchdog := time.NewTicker(watchdogInterval)
 	defer watchdog.Stop()
 
 	for {
@@ -729,7 +773,7 @@ func (c *Collector) shouldReconnect() bool {
 func (c *Collector) Close() error {
 	if c.client != nil {
 		// Stop the client (this will close connections and stop goroutines)
-		c.client.Stop()
+		_ = c.client.Stop()
 		c.client = nil
 	}
 	return nil
@@ -753,7 +797,7 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 	height := data.Height
 	round := data.Round
 
-	heightChanged, roundChanged := c.updateConsensusState(height, int32(round))
+	heightChanged, roundChanged := c.updateConsensusState(height, round)
 	if heightChanged {
 		c.resetVoteStates()
 		c.sendVoteStatesUpdate()
@@ -773,7 +817,7 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 	}
 	// 2) If still empty, try to resolve via RPC consensus endpoints (best-effort)
 	if proposer == "" {
-		proposer = c.tryResolveProposerAddress(context.Background(), height, int32(round))
+		proposer = c.tryResolveProposerAddress(context.Background(), round)
 	}
 
 	proposerMoniker := c.resolveMoniker(proposer)
@@ -787,7 +831,7 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 
 	rec := models.RoundProposer{
 		Height:          height,
-		Round:           int32(round),
+		Round:           round,
 		ProposerAddress: proposer,
 		ProposerMoniker: proposerMoniker,
 		Succeeded:       false,
@@ -800,7 +844,7 @@ func (c *Collector) handleNewRound(ev rpccoretypes.ResultEvent) {
 
 	// If create failed due to conflict, try to ensure proposer is updated if empty
 	var existing models.RoundProposer
-	if err := c.db.Where("height = ? AND round = ?", height, int32(round)).First(&existing).Error; err == nil {
+	if err := c.db.Where("height = ? AND round = ?", height, round).First(&existing).Error; err == nil {
 		if existing.ProposerAddress == "" && proposer != "" {
 			existing.ProposerAddress = proposer
 			if existing.ProposerMoniker == "" {
@@ -989,10 +1033,10 @@ func (c *Collector) handleNewBlock(ev rpccoretypes.ResultEvent) {
 	}
 }
 
-// tryResolveProposerAddress best-effort fetch of proposer address for a given (height, round)
-func (c *Collector) tryResolveProposerAddress(ctx context.Context, height int64, round int32) string {
+// tryResolveProposerAddress best-effort fetch of proposer address for a given round
+func (c *Collector) tryResolveProposerAddress(ctx context.Context, round int32) string {
 	// short timeout to avoid blocking event loop
-	tctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	tctx, cancel := context.WithTimeout(ctx, resolveProposerTimeout)
 	defer cancel()
 
 	endpoints := []string{"/consensus_state", "/dump_consensus_state"}
@@ -1006,7 +1050,7 @@ func (c *Collector) tryResolveProposerAddress(ctx context.Context, height int64,
 		if err != nil {
 			continue
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var payload interface{}
 		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 			continue
@@ -1194,9 +1238,9 @@ func (c *Collector) getValidatorMetricsSnapshot() map[string]validatorMetricsSna
 		}
 		entry := result[addr]
 		// Calculate percentage, ensuring it doesn't exceed 100%
-		rate := float64(stat.success) / float64(stat.total) * 100.0
-		if rate > 100.0 {
-			rate = 100.0
+		rate := float64(stat.success) / float64(stat.total) * percentMultiplier
+		if rate > percentMultiplier {
+			rate = percentMultiplier
 		}
 		entry.ProposerSuccessRate = rate
 		entry.HasProposerStats = true
@@ -1208,7 +1252,7 @@ func (c *Collector) getValidatorMetricsSnapshot() map[string]validatorMetricsSna
 			continue
 		}
 		entry := result[addr]
-		entry.NonNilVoteRate = float64(stat.nonNil) / float64(stat.total) * 100.0
+		entry.NonNilVoteRate = float64(stat.nonNil) / float64(stat.total) * percentMultiplier
 		entry.HasVoteStats = true
 		result[addr] = entry
 	}
@@ -1313,7 +1357,7 @@ func (c *Collector) handleVote(ev rpccoretypes.ResultEvent) {
 
 	// Determine vote type (1 = Prevote, 2 = Precommit)
 	voteType := "prevote"
-	if vote.Type == 2 { // VoteTypePrecommit
+	if vote.Type == voteTypePrecommit { // VoteTypePrecommit
 		voteType = "precommit"
 	}
 
@@ -1410,7 +1454,7 @@ func (c *Collector) flushVotesForHeight(height int64) {
 	// Batch insert votes (GORM CreateInBatches with batch size 1000)
 	// This ensures all votes for a single block are written in one batch
 	// Typical block has ~70-140 votes (70 validators * 2 vote types * rounds)
-	if err := c.db.CreateInBatches(votes, 1000).Error; err != nil {
+	if err := c.db.CreateInBatches(votes, votesBatchSize).Error; err != nil {
 		c.log.Printf("error flushing votes for height %d: %v (votes count: %d)", height, err, len(votes))
 	} else {
 		c.log.Printf("Flushed %d votes for height %d", len(votes), height)

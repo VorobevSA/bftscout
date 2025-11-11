@@ -49,4 +49,3 @@ func (l *Logger) Println(v ...interface{}) {
 func (l *Logger) Fatalf(format string, v ...interface{}) {
 	l.Logger.Fatalf(format, v...)
 }
-

@@ -51,7 +51,7 @@ func main() {
 	// Create channel for TUI updates (only if not in debug mode)
 	var tuiUpdateCh chan interface{}
 	if !cfg.Debug {
-		tuiUpdateCh = make(chan interface{}, 100)
+		tuiUpdateCh = make(chan interface{}, collector.TUIChannelBufferSize)
 		// Start TUI in a goroutine
 		go func() {
 			if err := tui.Run(tuiUpdateCh); err != nil {
@@ -64,7 +64,8 @@ func main() {
 
 	coll, err := collector.NewCollector(cfg, gormDB, tuiUpdateCh, log)
 	if err != nil {
-		log.Fatalf("failed to init collector: %v", err)
+		log.Printf("failed to init collector: %v", err)
+		return
 	}
 
 	go func() {
@@ -86,7 +87,7 @@ func main() {
 	if tuiUpdateCh != nil {
 		close(tuiUpdateCh)
 		// Give TUI a moment to process the close and quit
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(collector.TUICloseDelay)
 	}
 
 	// Ensure logs flushed in some environments

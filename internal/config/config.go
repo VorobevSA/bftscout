@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+const (
+	// DatabaseSchemePostgres is the postgres database scheme identifier
+	DatabaseSchemePostgres = "postgres"
+)
+
 type Config struct {
 	RPCURL    string
 	WSPath    string
@@ -41,9 +46,9 @@ func parseDatabaseURL(databaseURL string) (string, string, error) {
 	}
 	scheme := strings.ToLower(u.Scheme)
 	switch scheme {
-	case "postgres", "postgresql":
+	case DatabaseSchemePostgres, "postgresql":
 		// GORM postgres driver accepts URL DSN as-is
-		return "postgres", databaseURL, nil
+		return DatabaseSchemePostgres, databaseURL, nil
 	default:
 		return "", "", fmt.Errorf("unsupported DATABASE_URL scheme: %s", u.Scheme)
 	}
@@ -92,7 +97,7 @@ func (c Config) DebugString() string {
 
 func maskDSN(dialect, dsn string) string {
 	switch strings.ToLower(dialect) {
-	case "postgres":
+	case DatabaseSchemePostgres:
 		if u, err := url.Parse(dsn); err == nil && u.Scheme != "" {
 			if u.User != nil {
 				username := u.User.Username()

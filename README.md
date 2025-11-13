@@ -79,9 +79,9 @@ docker run --rm -it \
   --name bftscout \
   --network host \
   -e TERM="${TERM:-xterm-256color}" \
-  -e RPC_URL="http://host.docker.internal:26657" \
+  -e RPC_URL="http://localhost:26657" \
   -e WS_PATH="/websocket" \
-  -e APP_API_URL="http://host.docker.internal:1317" \
+  -e APP_API_URL="http://localhost:1317" \
   bftscout:0.0.1
 
 ```

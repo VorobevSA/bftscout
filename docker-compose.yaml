@@ -4,11 +4,13 @@ services:
     build: .
     image: bftscout:0.0.1
     environment:
-      RPC_URL: ${RPC_URL:-http://localhost:26657}
+      RPC_URL: ${RPC_URL:-http://host.docker.internal:26657}
       WS_PATH: ${WS_PATH:-/websocket}
-      APP_API_URL: ${APP_API_URL:-http://localhost:1317}
+      APP_API_URL: ${APP_API_URL:-http://host.docker.internal:1317}
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-consensus}?sslmode=disable
       DEBUG: ${DEBUG:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - bftscout-network
     depends_on:

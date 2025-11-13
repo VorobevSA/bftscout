@@ -77,10 +77,11 @@ docker build -t bftscout:0.0.1 .
 # Run the container with TUI attached to the current terminal
 docker run --rm -it \
   --name bftscout \
+  --network host \
   -e TERM="${TERM:-xterm-256color}" \
-  -e RPC_URL="http://validator.bft:26657" \
+  -e RPC_URL="http://localhost:26657" \
   -e WS_PATH="/websocket" \
-  -e APP_API_URL="http://node.bft:1317" \
+  -e APP_API_URL="http://localhost:1317" \
   bftscout:0.0.1
 
 ```
@@ -109,25 +110,7 @@ docker run --rm -it \
 ### Notes
 - To determine the round that finalized into a block, the system marks the maximum observed round for that height as succeeded. If `NewRound` events were not received (e.g., after restart), a synthetic record is created for round `0` with the block's proposer.
 - Proposer addresses are extracted from `NewRound` events, which reliably include the proposer information.
-- Code comments are in English.
 
-### Example: Docker Compose for Local Postgres
-```yaml
-version: '3.8'
-services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_DB: consensus
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-volumes:
-  pgdata: {}
-```
 
 ### License
 See [LICENSE](LICENSE) file for details.

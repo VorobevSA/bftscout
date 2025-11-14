@@ -20,7 +20,7 @@ type Config struct {
 	DBDialect string // postgres only
 	DBDsn     string // DSN string passed to GORM driver
 	AppAPIURL string // optional: Cosmos REST API base URL (e.g., http://node:1317)
-	Debug     bool   // if true: show logs, no TUI; if false: no logs, show TUI
+	Debug     bool   // if true: enable debug logs (written to file when TUI is active)
 }
 
 func getenv(key, def string) string {

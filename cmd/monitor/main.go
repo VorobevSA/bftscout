@@ -8,6 +8,7 @@ import (
 	"consensus-monitoring/internal/tui"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -25,7 +26,20 @@ func main() {
 	}
 
 	cfg := config.Load()
-	log := logger.New(cfg.Debug)
+	
+	// If debug logs are enabled, write them to file to avoid interfering with TUI
+	var logWriter io.Writer = os.Stderr
+	if cfg.Debug {
+		logFile, err := os.OpenFile("monitor.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err == nil {
+			logWriter = logFile
+			fmt.Fprintf(os.Stderr, "Debug logs written to monitor.log\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: failed to open log file, logs will go to stderr (may interfere with TUI): %v\n", err)
+		}
+	}
+	
+	log := logger.NewWithWriter(cfg.Debug, logWriter)
 
 	fmt.Printf("Consensus monitor starting...\n")
 	fmt.Printf("Config loaded: %s\n", cfg.DebugString())
@@ -49,19 +63,16 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Create channel for TUI updates (only if not in debug mode)
-	var tuiUpdateCh chan interface{}
-	if !cfg.Debug {
-		tuiUpdateCh = make(chan interface{}, collector.TUIChannelBufferSize)
-		// Start TUI in a goroutine
-		go func() {
-			if err := tui.Run(tuiUpdateCh); err != nil {
-				log.Printf("TUI error: %v", err)
-			}
-			// TUI exited, cancel context to trigger shutdown
-			cancel()
-		}()
-	}
+	// Create channel for TUI updates (TUI is always enabled)
+	tuiUpdateCh := make(chan interface{}, collector.TUIChannelBufferSize)
+	// Start TUI in a goroutine
+	go func() {
+		if err := tui.Run(tuiUpdateCh); err != nil {
+			log.Printf("TUI error: %v", err)
+		}
+		// TUI exited, cancel context to trigger shutdown
+		cancel()
+	}()
 
 	coll, err := collector.NewCollector(cfg, gormDB, tuiUpdateCh, log)
 	if err != nil {
@@ -85,11 +96,9 @@ func main() {
 	}
 
 	// Close TUI update channel to stop sending updates
-	if tuiUpdateCh != nil {
-		close(tuiUpdateCh)
-		// Give TUI a moment to process the close and quit
-		time.Sleep(collector.TUICloseDelay)
-	}
+	close(tuiUpdateCh)
+	// Give TUI a moment to process the close and quit
+	time.Sleep(collector.TUICloseDelay)
 
 	// Ensure logs flushed in some environments
 	_ = os.Stderr.Sync()

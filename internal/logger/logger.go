@@ -19,9 +19,18 @@ func New(debug bool) *Logger {
 	if debug {
 		writer = os.Stderr
 	}
+	return NewWithWriter(debug, writer)
+}
+
+// NewWithWriter creates a new logger with a custom writer
+func NewWithWriter(debug bool, writer io.Writer) *Logger {
+	var actualWriter io.Writer = io.Discard
+	if debug {
+		actualWriter = writer
+	}
 	return &Logger{
 		debug:  debug,
-		Logger: log.New(writer, "", log.LstdFlags),
+		Logger: log.New(actualWriter, "", log.LstdFlags),
 	}
 }
 

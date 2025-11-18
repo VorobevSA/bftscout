@@ -26,11 +26,12 @@ func main() {
 	}
 
 	cfg := config.Load()
-	
+
 	// If debug logs are enabled, write them to file to avoid interfering with TUI
+	const logFilePerm = 0o600
 	var logWriter io.Writer = os.Stderr
 	if cfg.Debug {
-		logFile, err := os.OpenFile("monitor.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		logFile, err := os.OpenFile("monitor.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFilePerm)
 		if err == nil {
 			logWriter = logFile
 			fmt.Fprintf(os.Stderr, "Debug logs written to monitor.log\n")
@@ -38,7 +39,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Warning: failed to open log file, logs will go to stderr (may interfere with TUI): %v\n", err)
 		}
 	}
-	
+
 	log := logger.NewWithWriter(cfg.Debug, logWriter)
 
 	fmt.Printf("Consensus monitor starting...\n")

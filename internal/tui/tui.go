@@ -279,73 +279,57 @@ func calculateProgressWidths(totalPercent, withHashPercent float64, width int) (
 	return totalWidth, withHashWidth
 }
 
-// buildProgressLine1 builds the first line of progress bar with text
-func buildProgressLine1(textLine string, totalWidth, withHashWidth int, grayStyle, greenStyle lipgloss.Style) string {
-	line1 := strings.Builder{}
-	for i, r := range []rune(textLine) {
+// buildProgressLine renders a string with progress bar background highlighting
+func buildProgressLine(textLine string, totalWidth, withHashWidth int, grayStyle, greenStyle lipgloss.Style) string {
+	runes := []rune(textLine)
+	line := strings.Builder{}
+	for i, r := range runes {
 		switch {
 		case i < withHashWidth:
-			// In green area (with hash) - apply green background
-			line1.WriteString(greenStyle.Render(string(r)))
+			line.WriteString(greenStyle.Render(string(r)))
 		case i < totalWidth:
-			// In gray area (all votes but nil hash) - apply gray background
-			line1.WriteString(grayStyle.Render(string(r)))
+			line.WriteString(grayStyle.Render(string(r)))
 		default:
-			// In empty area - just the character
-			line1.WriteRune(r)
+			line.WriteRune(r)
 		}
 	}
-	return line1.String()
+	return line.String()
 }
 
-// buildProgressLine2 builds the second line of progress bar without text
-func buildProgressLine2(width, totalWidth, withHashWidth int, grayStyle, greenStyle lipgloss.Style) string {
-	line2 := strings.Builder{}
-	for i := 0; i < width; i++ {
-		switch {
-		case i < withHashWidth:
-			// In green area (with hash) - green background
-			line2.WriteString(greenStyle.Render(" "))
-		case i < totalWidth:
-			// In gray area (all votes but nil hash) - gray background
-			line2.WriteString(grayStyle.Render(" "))
-		default:
-			// In empty area - just space
-			line2.WriteString(" ")
-		}
+func centerText(text string, width int) string {
+	if width <= 0 {
+		return text
 	}
-	return line2.String()
+	textWidth := runewidth.StringWidth(text)
+	if textWidth >= width {
+		return text
+	}
+	spacesBefore := (width - textWidth) / divisorTwo
+	spacesAfter := width - spacesBefore - textWidth
+	if spacesAfter < 0 {
+		spacesAfter = 0
+	}
+	return strings.Repeat(" ", spacesBefore) + text + strings.Repeat(" ", spacesAfter)
 }
 
 func renderProgressBar(label string, totalPercent, withHashPercent float64, width int) []string {
-	// Normalize percentages
 	totalPercent = normalizePercent(totalPercent)
 	withHashPercent = normalizePercent(withHashPercent)
 	if withHashPercent > totalPercent {
 		withHashPercent = totalPercent
 	}
 
-	// Calculate filled widths
 	totalWidth, withHashWidth := calculateProgressWidths(totalPercent, withHashPercent, width)
 
-	// Format percentage text (show withHashPercent)
-	percentText := fmt.Sprintf("%s: %.0f%%", label, withHashPercent)
-	textWidth := runewidth.StringWidth(percentText)
+	labelText := centerText(fmt.Sprintf("%s:", label), width)
 
-	// Create styles: gray for all votes, green for votes with hash
+	infoText := centerText(fmt.Sprintf("Not null: %.0f%%  Total: %.0f%%", withHashPercent, totalPercent), width)
+
 	grayStyle := lipgloss.NewStyle().Background(lipgloss.Color("8"))  // Gray background
 	greenStyle := lipgloss.NewStyle().Background(lipgloss.Color("2")) // Green background
 
-	// Build text line centered (only for first line)
-	spacesBefore := 0
-	if textWidth < width {
-		spacesBefore = (width - textWidth) / divisorTwo
-	}
-	textLine := strings.Repeat(" ", spacesBefore) + percentText + strings.Repeat(" ", width-spacesBefore-textWidth)
-
-	// Build lines
-	line1 := buildProgressLine1(textLine, totalWidth, withHashWidth, grayStyle, greenStyle)
-	line2 := buildProgressLine2(width, totalWidth, withHashWidth, grayStyle, greenStyle)
+	line1 := buildProgressLine(labelText, totalWidth, withHashWidth, grayStyle, greenStyle)
+	line2 := buildProgressLine(infoText, totalWidth, withHashWidth, grayStyle, greenStyle)
 
 	return []string{line1, line2}
 }

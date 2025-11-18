@@ -2,6 +2,8 @@
 
 A simple Go utility that subscribes to CometBFT consensus events and stores information about blocks and proposers per round in a database (GORM).
 
+![Demo](docs/assets/tui.gif)
+
 ### Features
 - Subscribes to `NewRound` and `NewBlock` events via WebSocket (`/websocket`).
 - Optionally stores data in PostgreSQL (if `DATABASE_URL` is provided):
@@ -111,6 +113,14 @@ docker run --rm -it \
 - To determine the round that finalized into a block, the system marks the maximum observed round for that height as succeeded. If `NewRound` events were not received (e.g., after restart), a synthetic record is created for round `0` with the block's proposer.
 - Proposer addresses are extracted from `NewRound` events, which reliably include the proposer information.
 
+### Acknowledgements
+
+This project was inspired by the amazing work of:
+
+- [QuokkaStake](https://github.com/QuokkaStake) and [tmtop](https://github.com/QuokkaStake/tmtop), a legendary terminal dashboard for Tendermint chains that we happily used until we outgrew its scope.
+- [Northa](https://github.com/Northa) and the original [consensus](https://github.com/Northa/consensus) CLI, which provided a concise snapshot of CometBFT consensus for a long time.
+
+Their tools set a high bar for operator-focused UX and directly influenced BFTScout’s design—thank you!
 
 ### License
 See [LICENSE](LICENSE) file for details.
